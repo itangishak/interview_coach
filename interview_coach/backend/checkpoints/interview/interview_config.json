@@ -1,0 +1,18 @@
+{
+  "feature_names": ["eye_contact", "smile", "posture", "head_stability", "body_movement"],
+  "window_size": 30,
+  "confidence_weights": {
+    "eye_contact": 0.30,
+    "smile": 0.15,
+    "posture": 0.20,
+    "head_stability": 0.20,
+    "body_movement": 0.15
+  },
+  "thresholds": {
+    "eye_contact": { "good": 0.7, "okay": 0.4 },
+    "smile": { "good": 0.5, "okay": 0.2 },
+    "posture": { "good": 0.7, "okay": 0.5 },
+    "head_stability": { "good": 0.7, "okay": 0.4 },
+    "body_movement": { "good": 0.7, "okay": 0.4 }
+  }
+}

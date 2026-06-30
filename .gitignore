@@ -1,0 +1,62 @@
+# ── Virtual environments ──
+.venv/
+.venv310/
+venv/
+env/
+ENV/
+
+# ── Editor ──
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Node / Next.js ──
+node_modules/
+.next/
+out/
+.npm/
+*.tsbuildinfo
+
+# ── Environment files ──
+.env
+.env.local
+.env.*.local
+
+# ── SQLite database ──
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Logs ──
+logs/
+*.log
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Model checkpoints (large files) ──
+checkpoints/interview/*.pt
+checkpoints/interview/*.pkl
+checkpoints/interview/*.npz
+training/cache/
+training/raw/wlasl/

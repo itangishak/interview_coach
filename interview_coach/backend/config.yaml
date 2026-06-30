@@ -1,0 +1,32 @@
+# Application Settings
+app:
+  name: "AI Interview Coach"
+  version: "1.0.0"
+  debug: false
+  host: "0.0.0.0"
+  port: 8000
+
+# Interview analysis
+interview:
+  window_size: 30
+  target_fps: 15
+  eye_contact_good: 0.7
+  smile_good: 0.4
+
+# MediaPipe Settings
+mediapipe:
+  model_complexity: 1
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+  max_num_faces: 1
+  refine_landmarks: true
+
+# Database
+database:
+  url: "sqlite:///./interview_coach.db"
+  echo: false
+
+# Paths
+paths:
+  checkpoints_interview: "./checkpoints/interview"
+  logs: "./logs"

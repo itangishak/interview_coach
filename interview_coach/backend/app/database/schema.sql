@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    preferred_voice TEXT NOT NULL DEFAULT 'female',
+    face_embedding BLOB,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
