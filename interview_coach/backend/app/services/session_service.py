@@ -97,14 +97,20 @@ class SessionService(metaclass=SingletonMeta):
         if not frames:
             return {"error": "No frames received"}
 
+        # Only include frames where the face was visible and not gated (Flaw D fix)
+        valid_frames = [f for f in frames if not f.get("excluded", False)]
+        agg_frames   = valid_frames if valid_frames else frames  # fallback to all
+
         summary: dict[str, Any] = {}
         for metric in self.METRICS:
-            values = [f[metric] for f in frames if metric in f]
+            values = [f[metric] for f in agg_frames if metric in f]
             summary[metric] = {
                 "mean": round(float(np.mean(values)), 3) if values else 0.0,
-                "min": round(float(np.min(values)), 3) if values else 0.0,
-                "max": round(float(np.max(values)), 3) if values else 0.0,
+                "min":  round(float(np.min(values)),  3) if values else 0.0,
+                "max":  round(float(np.max(values)),  3) if values else 0.0,
             }
+        summary["valid_frame_count"]   = len(valid_frames)
+        summary["excluded_frame_count"] = len(frames) - len(valid_frames)
 
         last_feedback = frames[-1].get("feedback", {})
         summary["recommendations"] = last_feedback.get("recommendations", [])

@@ -25,3 +25,23 @@ class InterviewSession(Base):
     frames_json: Mapped[str] = mapped_column(Text, default="[]")
     summary_json: Mapped[str] = mapped_column(Text, default="{}")
     frame_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class UserProfile(Base):
+    """Persistent per-user neutral baseline and camera-offset calibration.
+
+    baseline_json  — median metric values from completed calibration sessions
+                     e.g. {"eye_contact": 0.82, "smile": 0.12, ...}
+    camera_offset_json — per-user camera-above-screen pitch offset (degrees)
+                     e.g. {"pitch_deg": -8.5}
+    session_count  — number of completed sessions contributing to the baseline
+    updated_at     — ISO timestamp of last update
+    """
+
+    __tablename__ = "user_profiles"
+
+    user_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    baseline_json: Mapped[str] = mapped_column(Text, default="{}")
+    camera_offset_json: Mapped[str] = mapped_column(Text, default="{}")
+    session_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[str] = mapped_column(Text, default="")

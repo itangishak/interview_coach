@@ -16,7 +16,7 @@ export interface InterviewSessionState {
   stopSession: () => void;
 }
 
-export function useInterviewSession(): InterviewSessionState {
+export function useInterviewSession(userId?: string): InterviewSessionState {
   const [connected, setConnected] = useState(false);
   const [active, setActive] = useState(false);
   const [analysis, setAnalysis] = useState<AnalysisPayload | null>(null);
@@ -121,7 +121,7 @@ export function useInterviewSession(): InterviewSessionState {
     canvas.width = video.videoWidth || 640;
     canvas.height = video.videoHeight || 480;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85); // raised from 0.7 — better landmark accuracy
     ws.send(JSON.stringify({ type: "frame", image: dataUrl }));
   }, []);
 
@@ -163,7 +163,7 @@ export function useInterviewSession(): InterviewSessionState {
     setAnalysis(null);
     const sid = crypto.randomUUID();
     pendingStartRef.current = sid;
-    ws.send(JSON.stringify({ type: "start", session_id: sid }));
+    ws.send(JSON.stringify({ type: "start", session_id: sid, ...(userId ? { user_id: userId } : {}) }));
     setActive(true);
 
     frameTimerRef.current = setInterval(captureAndSend, FRAME_INTERVAL_MS);
