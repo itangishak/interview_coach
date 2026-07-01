@@ -92,6 +92,20 @@ export function DiagnosticPanel({ data, overlays, onToggleOverlay }: Props) {
           <Row label="pose_visible"      value={data.pose_visible} />
           <Row label="excluded"          value={data.excluded} />
           <Row label="calibrated"        value={data.calibrated} />
+
+          {/* Latency breakdown */}
+          {data.latency_ms && (
+            <>
+              <div style={{ height: 6 }} />
+              <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", color: "var(--muted)", padding: "3px 0" }}>
+                Latency (ms)
+              </div>
+              <Row label="prep (BGR→RGB)" value={`${data.latency_ms.prep.toFixed(2)}`} />
+              <Row label="face_mesh"      value={`${data.latency_ms.face.toFixed(2)}`} />
+              <Row label="pose"           value={`${data.latency_ms.pose.toFixed(2)}`} />
+              <Row label="total"          value={`${data.latency_ms.total.toFixed(2)}`} />
+            </>
+          )}
           <Row label="gaze_calibrating"  value={data.gaze_calibrating} />
           <Row label="yaw_deg"           value={`${data.yaw_deg.toFixed(2)}°`} />
           <Row label="pitch_deg"         value={`${data.pitch_deg.toFixed(2)}°`} />

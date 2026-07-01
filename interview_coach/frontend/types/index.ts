@@ -35,6 +35,12 @@ export interface DiagnosticPayload {
   face_visible: boolean;
   pose_visible: boolean;
   excluded: boolean;
+  latency_ms?: {
+    prep: number;
+    face: number;
+    pose: number;
+    total: number;
+  };
   yaw_deg: number;
   pitch_deg: number;
   roll_deg: number;

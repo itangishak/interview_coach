@@ -35,6 +35,8 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+import time
+
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -700,14 +702,27 @@ class InterviewAnalyzer:
         h, w = frame.shape[:2]
         self._frame_h, self._frame_w = h, w
 
+        t0 = time.perf_counter()
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        t1 = time.perf_counter()
         face_result = self.face_mesh.process(rgb)
+        t2 = time.perf_counter()
+
         pose_result = self.pose.process(rgb)
+        t3 = time.perf_counter()
 
         face_lm_raw = (
             face_result.multi_face_landmarks[0] if face_result.multi_face_landmarks else None
         )
         pose_lm_raw = pose_result.pose_landmarks
+
+        # Latency breakdown (ms)
+        prep_ms   = (t1 - t0) * 1000.0
+        face_ms   = (t2 - t1) * 1000.0
+        pose_ms   = (t3 - t2) * 1000.0
+        total_ms  = (t3 - t0) * 1000.0
 
         face_visible = face_lm_raw is not None
         pose_visible = pose_lm_raw is not None
@@ -912,6 +927,12 @@ class InterviewAnalyzer:
                         ]
             payload["diagnostic"] = {
                 "face_visible": face_visible, "pose_visible": pose_visible, "excluded": excluded,
+                "latency_ms": {
+                    "prep":   round(prep_ms,  2),
+                    "face":   round(face_ms,  2),
+                    "pose":   round(pose_ms,  2),
+                    "total":  round(total_ms, 2),
+                },
                 "yaw_deg": round(yaw_deg, 2), "pitch_deg": round(pitch_deg, 2), "roll_deg": round(roll_deg, 2),
                 "icd": round(icd, 4), "shoulder_width": round(shoulder_w, 4),
                 "raw_eye_contact":    round(raw_eye,   3) if raw_eye   is not None else None,
