@@ -2,20 +2,58 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Dark theme (default) ────────────────────────────────────────────── */
 :root {
-  --bg:      #0a0c10;
-  --surface: #111420;
-  --card:    #181d2e;
-  --border:  #252b3d;
-  --accent:  #4f8ef7;
-  --accent2: #7c5cfc;
-  --green:   #22c55e;
-  --amber:   #f59e0b;
-  --red:     #ef4444;
-  --text:    #e8ecf4;
-  --muted:   #6b7491;
-  --radius:  12px;
-  --font:    'Inter', system-ui, sans-serif;
+  --bg:        #0a0c10;
+  --surface:   #111420;
+  --card:      #181d2e;
+  --border:    #252b3d;
+  --accent:    #4f8ef7;
+  --accent2:   #7c5cfc;
+  --green:     #22c55e;
+  --green-bg:  #0f2a1e;
+  --amber:     #f59e0b;
+  --amber-bg:  #2a1f0a;
+  --red:       #ef4444;
+  --red-bg:    #2a1010;
+  --text:      #e8ecf4;
+  --muted:     #6b7491;
+  --ring-track:#1e2438;
+  --radius:    12px;
+  --font:      'Inter', system-ui, sans-serif;
+
+  /* Score color helpers used in JS via CSS variables */
+  --score-good:  #22c55e;
+  --score-okay:  #f59e0b;
+  --score-bad:   #ef4444;
+
+  /* Overlay / backdrop */
+  --overlay:   rgba(0,0,0,.70);
+  --blur-bg:   rgba(10,12,16,.75);
+}
+
+/* ── Light theme ─────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg:        #f4f5f9;
+  --surface:   #ffffff;
+  --card:      #f9fafb;
+  --border:    #e2e6f0;
+  --accent:    #2563eb;
+  --accent2:   #7c3aed;
+  --green:     #16a34a;
+  --green-bg:  #dcfce7;
+  --amber:     #d97706;
+  --amber-bg:  #fef3c7;
+  --red:       #dc2626;
+  --red-bg:    #fee2e2;
+  --text:      #111827;
+  --muted:     #6b7280;
+  --ring-track:#e5e7eb;
+  --score-good:  #16a34a;
+  --score-okay:  #d97706;
+  --score-bad:   #dc2626;
+  --overlay:   rgba(0,0,0,.50);
+  --blur-bg:   rgba(255,255,255,.85);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -26,6 +64,7 @@ body {
   font-family: var(--font);
   min-height: 100vh;
   overflow: hidden;
+  transition: background .25s, color .25s;
 }
 
 /* scrollbar */
