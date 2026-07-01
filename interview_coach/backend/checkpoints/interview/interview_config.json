@@ -14,5 +14,11 @@
     "posture": { "good": 0.7, "okay": 0.5 },
     "head_stability": { "good": 0.7, "okay": 0.4 },
     "body_movement": { "good": 0.7, "okay": 0.4 }
-  }
+  },
+  "normalization": {
+    "movement_floor": 0.0003,
+    "movement_ceil": 0.018,
+    "stability_coeff": 0.06
+  },
+  "gaze_calibration_seconds": 3
 }

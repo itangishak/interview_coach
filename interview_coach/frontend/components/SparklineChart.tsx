@@ -23,23 +23,27 @@ export function SparklineChart({ history }: Props) {
 
     if (history.length < 2) return;
 
+    // Read CSS variable for accent colour so it respects theme
+    const accent = getComputedStyle(document.documentElement)
+      .getPropertyValue("--accent").trim() || "#4f8ef7";
+
     ctx.beginPath();
     history.forEach((v, i) => {
       const x = (i / (history.length - 1)) * w;
       const y = h - (v / 100) * h;
       i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
     });
-    ctx.strokeStyle = "#4f8ef7";
+    ctx.strokeStyle = accent;
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    // fill area under line
+    // Fill area under line
     const lastX = w;
     const lastY = h - (history[history.length - 1] / 100) * h;
     ctx.lineTo(lastX, h);
     ctx.lineTo(0, h);
     ctx.closePath();
-    ctx.fillStyle = "rgba(79,142,247,.12)";
+    ctx.fillStyle = `${accent}1f`; // ~12% opacity
     ctx.fill();
   }, [history]);
 
@@ -50,14 +54,14 @@ export function SparklineChart({ history }: Props) {
   return (
     <div
       style={{
-        background: "#181d2e",
-        border: "1px solid #252b3d",
+        background: "var(--card)",
+        border: "1px solid var(--border)",
         borderRadius: 12,
         padding: 12,
         marginBottom: 20,
       }}
     >
-      <div style={{ fontSize: 10, color: "#6b7491", marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
+      <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
         <span>Last 60 s</span>
         <span>{avg !== null ? `Avg ${avg}%` : "—"}</span>
       </div>

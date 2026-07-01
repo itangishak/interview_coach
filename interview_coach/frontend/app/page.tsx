@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ConfidenceRing } from "@/components/ConfidenceRing";
+import { DiagnosticOverlay } from "@/components/DiagnosticOverlay";
+import { DiagnosticPanel } from "@/components/DiagnosticPanel";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { MetricsPanel } from "@/components/MetricsPanel";
 import { SessionReport } from "@/components/SessionReport";
@@ -11,7 +13,39 @@ import { useInterviewSession } from "@/hooks/useInterviewSession";
 
 const MAX_HIST = 120; // 2 min at 1 sample/s
 
+type OverlayKey = "facialMidline" | "eyeLine" | "poseMidline" | "pnpPoints" | "irisPoints" | "poseAxes";
+const DEFAULT_OVERLAYS: Record<OverlayKey, boolean> = {
+  facialMidline: true,
+  eyeLine:       true,
+  poseMidline:   true,
+  pnpPoints:     true,
+  irisPoints:    true,
+  poseAxes:      true,
+};
+
+// ── Theme helpers ─────────────────────────────────────────────────────────────
+function readStoredTheme(): "dark" | "light" {
+  try {
+    return (localStorage.getItem("theme") as "dark" | "light") ?? "dark";
+  } catch {
+    return "dark";
+  }
+}
+
+function applyTheme(theme: "dark" | "light") {
+  if (theme === "light") {
+    document.documentElement.setAttribute("data-theme", "light");
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+  try { localStorage.setItem("theme", theme); } catch { /* ssr */ }
+}
+
 export default function HomePage() {
+  const [diagnosticMode, setDiagnosticMode] = useState(false);
+  const [overlays, setOverlays] = useState<Record<OverlayKey, boolean>>(DEFAULT_OVERLAYS);
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
   const { connected, active, analysis, summary, startSession, stopSession } =
     useInterviewSession();
 
@@ -21,6 +55,25 @@ export default function HomePage() {
 
   // Live webcam preview
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const [videoDims, setVideoDims] = useState({ w: 640, h: 480 });
+
+  // ── Theme init (reads localStorage on mount; respects prefers-color-scheme) ──
+  useEffect(() => {
+    let stored: "dark" | "light" | null = null;
+    try { stored = localStorage.getItem("theme") as "dark" | "light" | null; } catch { /* ssr */ }
+    const preferred = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    const initial = stored ?? preferred;
+    setTheme(initial);
+    applyTheme(initial);
+  }, []);
+
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next = prev === "dark" ? "light" : "dark";
+      applyTheme(next);
+      return next;
+    });
+  };
 
   // Timer
   useEffect(() => {
@@ -30,9 +83,10 @@ export default function HomePage() {
     return () => clearInterval(id);
   }, [active]);
 
-  // Build sparkline history
+  // Build sparkline history (only when face is valid — not frozen EMA)
   useEffect(() => {
     if (!analysis) return;
+    if (!analysis.face_valid) return; // skip excluded frames in sparkline
     setConfHistory((prev) => {
       const next = [...prev, analysis.confidence];
       return next.length > MAX_HIST ? next.slice(-MAX_HIST) : next;
@@ -60,8 +114,27 @@ export default function HomePage() {
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
 
+  const toggleOverlay = (key: OverlayKey) => {
+    setOverlays((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const handleStart = () => {
+    startSession({ diagnosticMode });
+  };
+
+  const btnBase: React.CSSProperties = {
+    padding: "7px 18px",
+    borderRadius: 8,
+    border: "1px solid var(--border)",
+    background: "var(--card)",
+    color: "var(--text)",
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: "pointer",
+  };
+
   return (
-    <div style={{ display: "grid", gridTemplateRows: "56px 1fr", height: "100vh", overflow: "hidden" }}>
+    <div style={{ display: "grid", gridTemplateRows: "56px 1fr", height: "100vh", overflow: "hidden", background: "var(--bg)", color: "var(--text)" }}>
 
       {/* ── Header ── */}
       <header
@@ -70,10 +143,11 @@ export default function HomePage() {
           alignItems: "center",
           justifyContent: "space-between",
           padding: "0 28px",
-          borderBottom: "1px solid #252b3d",
-          background: "#111420",
+          borderBottom: "1px solid var(--border)",
+          background: "var(--surface)",
         }}
       >
+        {/* Left: logo */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 600, fontSize: 15 }}>
           <div
             className="animate-pulse-dot"
@@ -81,40 +155,52 @@ export default function HomePage() {
               width: 8,
               height: 8,
               borderRadius: "50%",
-              background: connected ? "#4f8ef7" : "#6b7491",
-              boxShadow: connected ? "0 0 8px #4f8ef7" : "none",
+              background: connected ? "var(--accent)" : "var(--muted)",
+              boxShadow: connected ? "0 0 8px var(--accent)" : "none",
             }}
           />
           Interview Coach
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "#6b7491" }}>
+        {/* Right: controls */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "var(--muted)" }}>
             {mm}:{ss}
           </span>
+
+          {/* Theme toggle */}
+          <button onClick={toggleTheme} title="Toggle theme" style={btnBase}>
+            {theme === "dark" ? "☀️" : "🌙"}
+          </button>
+
+          {/* Diagnostic mode toggle */}
           <button
-            onClick={() => setShowReport(true)}
+            onClick={() => setDiagnosticMode((v) => !v)}
+            title="Toggle diagnostic mode"
             style={{
-              padding: "7px 18px",
-              borderRadius: 8,
-              border: "1px solid #252b3d",
-              background: "#181d2e",
-              color: "#e8ecf4",
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: "pointer",
+              ...btnBase,
+              background: diagnosticMode ? "var(--accent)" : "var(--card)",
+              color: diagnosticMode ? "#fff" : "var(--text)",
+              border: diagnosticMode ? "1px solid var(--accent)" : "1px solid var(--border)",
             }}
           >
-            📋 Session Report
+            🔬 Diagnostic
           </button>
+
+          {/* Session report */}
+          <button onClick={() => setShowReport(true)} style={btnBase}>
+            📋 Report
+          </button>
+
+          {/* Start / Stop */}
           <button
-            onClick={active ? stopSession : startSession}
+            onClick={active ? stopSession : handleStart}
             disabled={!connected}
             style={{
               padding: "7px 18px",
               borderRadius: 8,
               border: "none",
-              background: active ? "#ef4444" : "#4f8ef7",
+              background: active ? "var(--red)" : "var(--accent)",
               color: "#fff",
               fontSize: 13,
               fontWeight: 500,
@@ -123,22 +209,22 @@ export default function HomePage() {
               transition: "background .2s",
             }}
           >
-            {active ? "Stop Session" : "Start Session"}
+            {active ? "Stop" : "Start Session"}
           </button>
         </div>
       </header>
 
       {/* ── Main ── */}
-      <main style={{ display: "grid", gridTemplateColumns: "1fr 340px", height: "calc(100vh - 56px)", overflow: "hidden" }}>
+      <main style={{ display: "grid", gridTemplateColumns: diagnosticMode ? "1fr 340px 280px" : "1fr 340px", height: "calc(100vh - 56px)", overflow: "hidden" }}>
 
         {/* Video panel */}
         <div style={{ position: "relative", background: "#000", display: "flex", alignItems: "center", justifyContent: "center" }}>
           {!active ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, color: "#6b7491", fontSize: 14 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, color: "var(--muted)", fontSize: 14 }}>
               <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ opacity: .3 }}>
                 <path d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
               </svg>
-              Press <strong style={{ color: "#e8ecf4" }}>Start Session</strong> to begin
+              Press <strong style={{ color: "var(--text)" }}>Start Session</strong> to begin
             </div>
           ) : (
             <video
@@ -146,13 +232,31 @@ export default function HomePage() {
               autoPlay
               playsInline
               muted
+              onLoadedMetadata={(e) => {
+                const v = e.currentTarget;
+                setVideoDims({ w: v.videoWidth, h: v.videoHeight });
+              }}
               style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          )}
+
+          {/* Diagnostic overlay canvas */}
+          {active && diagnosticMode && (
+            <DiagnosticOverlay
+              data={analysis?.diagnostic ?? null}
+              overlays={overlays}
+              videoWidth={videoDims.w}
+              videoHeight={videoDims.h}
             />
           )}
 
           {/* Confidence badge */}
           {active && analysis && (
-            <ConfidenceRing value={analysis.confidence} />
+            <ConfidenceRing
+              value={analysis.confidence}
+              faceValid={analysis.face_valid}
+              calibrating={analysis.calibrating}
+            />
           )}
 
           {/* Status pills */}
@@ -160,8 +264,8 @@ export default function HomePage() {
             <div style={{ position: "absolute", bottom: 20, left: 20, display: "flex", gap: 8, flexWrap: "wrap" }}>
               {[
                 { ok: analysis.face_detected, good: "Face detected", bad: "No face" },
-                { ok: analysis.eye_contact >= 0.6, good: "Good eye contact", bad: "Look at camera" },
-                { ok: analysis.body_movement >= 0.6, good: "Calm", bad: "Too much movement" },
+                { ok: analysis.face_valid && analysis.eye_contact >= 0.6, good: "Good eye contact", bad: "Look at camera" },
+                { ok: analysis.pose_valid && analysis.body_movement >= 0.6, good: "Calm", bad: "Too much movement" },
               ].map(({ ok, good, bad }, i) => (
                 <div
                   key={i}
@@ -170,15 +274,16 @@ export default function HomePage() {
                     borderRadius: 20,
                     fontSize: 11,
                     fontWeight: 500,
-                    background: "rgba(10,12,16,.75)",
+                    background: "var(--blur-bg)",
                     backdropFilter: "blur(8px)",
-                    border: `1px solid ${ok ? "#22c55e55" : "#ef444455"}`,
+                    border: `1px solid ${ok ? "rgba(34,197,94,.35)" : "rgba(239,68,68,.35)"}`,
                     display: "flex",
                     alignItems: "center",
                     gap: 5,
+                    color: "var(--text)",
                   }}
                 >
-                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: ok ? "#22c55e" : "#ef4444" }} />
+                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: ok ? "var(--green)" : "var(--red)" }} />
                   {ok ? good : bad}
                 </div>
               ))}
@@ -189,8 +294,8 @@ export default function HomePage() {
         {/* Side panel */}
         <div
           style={{
-            background: "#111420",
-            borderLeft: "1px solid #252b3d",
+            background: "var(--surface)",
+            borderLeft: "1px solid var(--border)",
             display: "flex",
             flexDirection: "column",
             overflowY: "auto",
@@ -198,42 +303,53 @@ export default function HomePage() {
         >
           {/* Live metrics */}
           <div style={{ padding: "20px 20px 0" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".1em", color: "#6b7491", marginBottom: 14 }}>
-              Live metrics
-            </div>
+            <SectionLabel>Live metrics</SectionLabel>
             <MetricsPanel analysis={analysis} />
           </div>
 
-          <div style={{ height: 1, background: "#252b3d", margin: "0 20px" }} />
+          <Divider />
 
           {/* Status */}
           <div style={{ padding: "16px 20px 0" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".1em", color: "#6b7491", marginBottom: 14 }}>
-              Status
-            </div>
+            <SectionLabel>Status</SectionLabel>
             <StatusCards analysis={analysis} />
           </div>
 
-          <div style={{ height: 1, background: "#252b3d", margin: "0 20px" }} />
+          <Divider />
 
           {/* Sparkline */}
           <div style={{ padding: "16px 20px 0" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".1em", color: "#6b7491", marginBottom: 14 }}>
-              Confidence history
-            </div>
+            <SectionLabel>Confidence history</SectionLabel>
             <SparklineChart history={confHistory} />
           </div>
 
-          <div style={{ height: 1, background: "#252b3d", margin: "0 20px" }} />
+          <Divider />
 
           {/* Feedback */}
           <div style={{ padding: "16px 20px 20px" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".1em", color: "#6b7491", marginBottom: 14 }}>
-              AI feedback
-            </div>
+            <SectionLabel>AI feedback</SectionLabel>
             <FeedbackPanel analysis={analysis} />
           </div>
         </div>
+
+        {/* Diagnostic side panel (only when diagnosticMode=true) */}
+        {diagnosticMode && (
+          <div
+            style={{
+              background: "var(--surface)",
+              borderLeft: "1px solid var(--border)",
+              overflowY: "auto",
+              padding: "16px 14px",
+            }}
+          >
+            <SectionLabel>Diagnostic</SectionLabel>
+            <DiagnosticPanel
+              data={analysis?.diagnostic ?? null}
+              overlays={overlays}
+              onToggleOverlay={(key) => toggleOverlay(key as OverlayKey)}
+            />
+          </div>
+        )}
       </main>
 
       {/* Report modal */}
@@ -242,4 +358,18 @@ export default function HomePage() {
       )}
     </div>
   );
+}
+
+// ── Small layout helpers ──────────────────────────────────────────────────────
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".1em", color: "var(--muted)", marginBottom: 14 }}>
+      {children}
+    </div>
+  );
+}
+
+function Divider() {
+  return <div style={{ height: 1, background: "var(--border)", margin: "0 20px" }} />;
 }

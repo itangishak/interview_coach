@@ -16,8 +16,8 @@ export function FeedbackPanel({ analysis }: Props) {
       {recommendations.length === 0 ? (
         <div
           style={{
-            background: "#181d2e",
-            border: "1px solid #252b3d",
+            background: "var(--card)",
+            border: "1px solid var(--border)",
             borderRadius: 10,
             padding: "10px 12px",
             fontSize: 12,
@@ -28,15 +28,17 @@ export function FeedbackPanel({ analysis }: Props) {
           }}
         >
           <span>💡</span>
-          <span>{analysis ? "Detecting…" : "Start your session to receive real-time coaching feedback."}</span>
+          <span style={{ color: "var(--muted)" }}>
+            {analysis ? "Detecting…" : "Start your session to receive real-time coaching feedback."}
+          </span>
         </div>
       ) : (
         recommendations.map((tip, i) => (
           <div
             key={i}
             style={{
-              background: "#181d2e",
-              border: "1px solid #252b3d",
+              background: "var(--card)",
+              border: "1px solid var(--border)",
               borderRadius: 10,
               padding: "10px 12px",
               fontSize: 12,
@@ -44,6 +46,7 @@ export function FeedbackPanel({ analysis }: Props) {
               display: "flex",
               gap: 8,
               alignItems: "flex-start",
+              color: "var(--text)",
             }}
           >
             <span style={{ flexShrink: 0, marginTop: 1 }}>{ICONS[i] ?? "💡"}</span>

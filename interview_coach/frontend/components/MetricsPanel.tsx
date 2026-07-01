@@ -3,9 +3,9 @@
 import type { AnalysisPayload } from "@/types";
 
 function scoreColor(v: number) {
-  if (v >= 70) return "#22c55e";
-  if (v >= 45) return "#f59e0b";
-  return "#ef4444";
+  if (v >= 70) return "var(--green)";
+  if (v >= 45) return "var(--amber)";
+  return "var(--red)";
 }
 
 function cardBorder(v: number) {
@@ -17,44 +17,64 @@ function cardBorder(v: number) {
 interface MetricCardProps {
   name: string;
   icon: string;
-  value: number;      // 0–1
+  value: number | null;      // null = no signal
   barColor?: string;
   subText: string;
+  dimmed?: boolean;          // true during calibration
 }
 
-function MetricCard({ name, icon, value, barColor, subText }: MetricCardProps) {
-  const pct = Math.round(value * 100);
+function MetricCard({ name, icon, value, barColor, subText, dimmed }: MetricCardProps) {
+  const noSignal = value === null;
+  const pct = noSignal ? 0 : Math.round(value * 100);
+  const borderColor = noSignal || dimmed ? "var(--border)" : cardBorder(pct);
+
   return (
     <div
       style={{
-        background: "#181d2e",
-        border: `1px solid ${cardBorder(pct)}`,
+        background: "var(--card)",
+        border: `1px solid ${borderColor}`,
         borderRadius: 12,
         padding: 14,
-        transition: "border-color .3s",
+        transition: "border-color .3s, opacity .3s",
+        opacity: dimmed ? 0.55 : 1,
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <span style={{ fontSize: 10, color: "#6b7491", textTransform: "uppercase", letterSpacing: ".07em" }}>
+        <span style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".07em" }}>
           {name}
         </span>
         <span style={{ fontSize: 14 }}>{icon}</span>
       </div>
-      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", lineHeight: 1 }}>
-        {pct}%
+
+      {/* Value — "—" when no signal, "…" when calibrating */}
+      <div
+        style={{
+          fontSize: 24,
+          fontWeight: 700,
+          fontFamily: "'JetBrains Mono', monospace",
+          lineHeight: 1,
+          color: noSignal || dimmed ? "var(--muted)" : "var(--text)",
+        }}
+      >
+        {noSignal ? "—" : dimmed ? "…" : `${pct}%`}
       </div>
-      <div style={{ height: 3, background: "#252b3d", borderRadius: 2, marginTop: 8, overflow: "hidden" }}>
-        <div
-          style={{
-            height: "100%",
-            borderRadius: 2,
-            width: `${pct}%`,
-            background: barColor ?? scoreColor(pct),
-            transition: "width .5s ease",
-          }}
-        />
+
+      {/* Progress bar */}
+      <div style={{ height: 3, background: "var(--border)", borderRadius: 2, marginTop: 8, overflow: "hidden" }}>
+        {!noSignal && !dimmed && (
+          <div
+            style={{
+              height: "100%",
+              borderRadius: 2,
+              width: `${pct}%`,
+              background: barColor ?? scoreColor(pct),
+              transition: "width .5s ease",
+            }}
+          />
+        )}
       </div>
-      <div style={{ fontSize: 10, color: "#6b7491", marginTop: 4 }}>{subText}</div>
+
+      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 4 }}>{subText}</div>
     </div>
   );
 }
@@ -64,22 +84,65 @@ interface Props {
 }
 
 export function MetricsPanel({ analysis }: Props) {
-  const ec    = analysis?.eye_contact ?? 0;
-  const sm    = analysis?.smile ?? 0;
-  const ps    = analysis?.posture ?? 0;
-  const mv    = analysis?.body_movement ?? 0;
+  // face_valid: false means face is absent → show "—"
+  // calibrating: true means baseline collection → dim cards
+  const faceValid = analysis?.face_valid ?? false;
+  const poseValid = analysis?.pose_valid ?? false;
+  const calibrating = analysis?.calibrating ?? false;
 
-  const ecSub = ec >= 0.7 ? "Focused" : ec >= 0.45 ? "Drifting" : "Look at camera";
-  const smSub = sm >= 0.5 ? "Warm & approachable" : sm >= 0.25 ? "Slight" : "Try to smile more";
-  const psSub = ps >= 0.7 ? "Upright" : ps >= 0.4 ? "Slightly slouched" : "Sit up straight";
-  const mvSub = mv >= 0.7 ? "Calm & composed" : mv >= 0.45 ? "Slightly restless" : "Too much movement";
+  // Only show numeric value when signal is present
+  const ec = faceValid ? (analysis?.eye_contact ?? null) : null;
+  const sm = faceValid ? (analysis?.smile ?? null) : null;
+  const ps = poseValid ? (analysis?.posture ?? null) : null;
+  const mv = poseValid ? (analysis?.body_movement ?? null) : null;
+
+  const ecPct = ec !== null ? Math.round(ec * 100) : 0;
+  const smPct = sm !== null ? Math.round(sm * 100) : 0;
+  const psPct = ps !== null ? Math.round(ps * 100) : 0;
+  const mvPct = mv !== null ? Math.round(mv * 100) : 0;
+
+  const ecSub = !analysis
+    ? "Waiting…"
+    : !faceValid
+    ? "No face detected"
+    : calibrating
+    ? "Calibrating…"
+    : ecPct >= 70 ? "Focused" : ecPct >= 45 ? "Drifting" : "Look at camera";
+
+  const smSub = !analysis
+    ? "Waiting…"
+    : !faceValid
+    ? "No face detected"
+    : calibrating
+    ? "Calibrating…"
+    : smPct >= 50 ? "Warm & approachable" : smPct >= 25 ? "Slight" : "Try to smile more";
+
+  const psSub = !analysis
+    ? "Waiting…"
+    : !poseValid
+    ? "No pose detected"
+    : calibrating
+    ? "Calibrating…"
+    : psPct >= 70 ? "Upright" : psPct >= 40 ? "Slightly slouched" : "Sit up straight";
+
+  const mvSub = !analysis
+    ? "Waiting…"
+    : !poseValid
+    ? "No pose detected"
+    : calibrating
+    ? "Calibrating…"
+    : mvPct >= 70 ? "Calm & composed" : mvPct >= 45 ? "Slightly restless" : "Too much movement";
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
-      <MetricCard name="Eye contact" icon="👁"  value={ec} barColor="#4f8ef7" subText={analysis ? ecSub : "Waiting…"} />
-      <MetricCard name="Smile"       icon="😊"  value={sm} barColor="#22c55e" subText={analysis ? smSub : "Waiting…"} />
-      <MetricCard name="Posture"     icon="🪑"  value={ps} barColor="#7c5cfc" subText={analysis ? psSub : "Waiting…"} />
-      <MetricCard name="Movement"    icon="🏃"  value={mv} barColor={mv >= 0.7 ? "#22c55e" : mv >= 0.45 ? "#f59e0b" : "#ef4444"} subText={analysis ? mvSub : "Waiting…"} />
+      <MetricCard name="Eye contact" icon="👁"  value={ec} barColor="var(--accent)"  subText={ecSub} dimmed={calibrating && faceValid} />
+      <MetricCard name="Smile"       icon="😊"  value={sm} barColor="var(--green)"   subText={smSub} dimmed={calibrating && faceValid} />
+      <MetricCard name="Posture"     icon="🪑"  value={ps} barColor="var(--accent2)" subText={psSub} dimmed={calibrating && poseValid} />
+      <MetricCard name="Movement"    icon="🏃"  value={mv}
+        barColor={mv === null ? "var(--muted)" : mvPct >= 70 ? "var(--green)" : mvPct >= 45 ? "var(--amber)" : "var(--red)"}
+        subText={mvSub}
+        dimmed={calibrating && poseValid}
+      />
     </div>
   );
 }

@@ -3,9 +3,9 @@
 import type { SessionSummary } from "@/types";
 
 function scoreColor(v: number) {
-  if (v >= 70) return "#22c55e";
-  if (v >= 45) return "#f59e0b";
-  return "#ef4444";
+  if (v >= 70) return "var(--green)";
+  if (v >= 45) return "var(--amber)";
+  return "var(--red)";
 }
 
 interface Props {
@@ -32,7 +32,7 @@ export function SessionReport({ summary, onClose }: Props) {
       style={{
         position: "fixed",
         inset: 0,
-        background: "rgba(0,0,0,.7)",
+        background: "var(--overlay)",
         backdropFilter: "blur(4px)",
         display: "flex",
         alignItems: "center",
@@ -43,18 +43,19 @@ export function SessionReport({ summary, onClose }: Props) {
     >
       <div
         style={{
-          background: "#111420",
-          border: "1px solid #252b3d",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
           borderRadius: 18,
           padding: 32,
           maxWidth: 480,
           width: "90%",
           maxHeight: "80vh",
           overflowY: "auto",
+          color: "var(--text)",
         }}
       >
         <h2 style={{ fontSize: 20, marginBottom: 6 }}>Session Report</h2>
-        <p style={{ color: "#6b7491", fontSize: 13, marginBottom: 24 }}>
+        <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 24 }}>
           {summary
             ? `Duration: ${m}m ${s}s · ${summary.total_frames} frames analysed`
             : "No session data yet. Start and complete a session first."}
@@ -73,11 +74,11 @@ export function SessionReport({ summary, onClose }: Props) {
                     justifyContent: "space-between",
                     alignItems: "center",
                     padding: "10px 0",
-                    borderBottom: "1px solid #252b3d",
+                    borderBottom: "1px solid var(--border)",
                     fontSize: 14,
                   }}
                 >
-                  <span style={{ color: "#6b7491" }}>{label}</span>
+                  <span style={{ color: "var(--muted)" }}>{label}</span>
                   <span
                     style={{
                       fontWeight: 600,
@@ -93,7 +94,7 @@ export function SessionReport({ summary, onClose }: Props) {
 
             {summary.recommendations.length > 0 && (
               <div style={{ marginTop: 20 }}>
-                <h3 style={{ fontSize: 13, color: "#6b7491", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 10 }}>
+                <h3 style={{ fontSize: 13, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 10 }}>
                   Recommendations
                 </h3>
                 {summary.recommendations.map((tip, i) => (
@@ -103,9 +104,11 @@ export function SessionReport({ summary, onClose }: Props) {
                       fontSize: 13,
                       padding: "8px 12px",
                       borderRadius: 8,
-                      background: "#181d2e",
+                      background: "var(--card)",
+                      border: "1px solid var(--border)",
                       marginBottom: 6,
                       lineHeight: 1.5,
+                      color: "var(--text)",
                     }}
                   >
                     • {tip}
@@ -122,7 +125,7 @@ export function SessionReport({ summary, onClose }: Props) {
             marginTop: 20,
             width: "100%",
             padding: 10,
-            background: "#4f8ef7",
+            background: "var(--accent)",
             color: "#fff",
             border: "none",
             borderRadius: 8,

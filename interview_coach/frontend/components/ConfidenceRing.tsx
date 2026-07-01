@@ -4,9 +4,9 @@ const RADIUS = 26;
 const CIRC = 2 * Math.PI * RADIUS; // ≈163
 
 function scoreColor(v: number) {
-  if (v >= 70) return "#22c55e";
-  if (v >= 45) return "#f59e0b";
-  return "#ef4444";
+  if (v >= 70) return "var(--green)";
+  if (v >= 45) return "var(--amber)";
+  return "var(--red)";
 }
 
 function gradeLabel(v: number) {
@@ -17,13 +17,16 @@ function gradeLabel(v: number) {
 }
 
 interface Props {
-  value: number; // 0–100
+  value: number;       // 0–100
+  faceValid?: boolean; // false = no signal state
+  calibrating?: boolean;
 }
 
-export function ConfidenceRing({ value }: Props) {
-  const pct = Math.min(100, Math.max(0, value));
-  const offset = CIRC * (1 - pct / 100);
-  const color = scoreColor(pct);
+export function ConfidenceRing({ value, faceValid = true, calibrating = false }: Props) {
+  const noSignal = !faceValid;
+  const pct = noSignal ? 0 : Math.min(100, Math.max(0, value));
+  const offset = noSignal ? CIRC : CIRC * (1 - pct / 100);
+  const color = noSignal ? "var(--muted)" : scoreColor(pct);
 
   return (
     <div
@@ -31,9 +34,9 @@ export function ConfidenceRing({ value }: Props) {
         position: "absolute",
         top: 20,
         left: 20,
-        background: "rgba(10,12,16,.75)",
+        background: "var(--blur-bg)",
         backdropFilter: "blur(8px)",
-        border: "1px solid #252b3d",
+        border: "1px solid var(--border)",
         borderRadius: 14,
         padding: "14px 18px",
         display: "flex",
@@ -46,7 +49,7 @@ export function ConfidenceRing({ value }: Props) {
         <svg width="64" height="64" viewBox="0 0 64 64" style={{ transform: "rotate(-90deg)" }}>
           <circle
             cx="32" cy="32" r={RADIUS}
-            fill="none" stroke="#252b3d" strokeWidth="5"
+            fill="none" stroke="var(--ring-track)" strokeWidth="5"
           />
           <circle
             cx="32" cy="32" r={RADIUS}
@@ -70,20 +73,28 @@ export function ConfidenceRing({ value }: Props) {
             justifyContent: "center",
           }}
         >
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 17, fontWeight: 700, lineHeight: 1 }}>
-            {Math.round(pct)}
-          </span>
-          <span style={{ fontSize: 9, color: "#6b7491", marginTop: 1 }}>%</span>
+          {noSignal ? (
+            <span style={{ fontSize: 18, lineHeight: 1 }}>—</span>
+          ) : calibrating ? (
+            <span style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1 }}>…</span>
+          ) : (
+            <>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 17, fontWeight: 700, lineHeight: 1 }}>
+                {Math.round(pct)}
+              </span>
+              <span style={{ fontSize: 9, color: "var(--muted)", marginTop: 1 }}>%</span>
+            </>
+          )}
         </div>
       </div>
 
       {/* Text */}
       <div>
-        <div style={{ fontSize: 11, color: "#6b7491", textTransform: "uppercase", letterSpacing: ".08em" }}>
+        <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".08em" }}>
           Confidence
         </div>
         <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2, color, transition: "color .4s" }}>
-          {gradeLabel(pct)}
+          {noSignal ? "No signal" : calibrating ? "Calibrating" : gradeLabel(pct)}
         </div>
       </div>
     </div>

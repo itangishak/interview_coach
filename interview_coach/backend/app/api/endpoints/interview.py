@@ -46,8 +46,9 @@ async def interview_stream(websocket: WebSocket):
 
             if msg_type == "start":
                 session_id = data.get("session_id") or str(uuid.uuid4())
-                user_id    = data.get("user_id") or None
-                analyzer   = InterviewAnalyzer(user_id=user_id)
+                user_id        = data.get("user_id") or None
+                diagnostic     = bool(data.get("diagnostic", False))
+                analyzer       = InterviewAnalyzer(user_id=user_id, diagnostic_mode=diagnostic)
                 analyzer.reset()
                 started = sessions.start_session(session_id)
                 await websocket.send_json({"type": "status", "payload": started})

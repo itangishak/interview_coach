@@ -13,17 +13,17 @@ export function StatusCards({ analysis }: Props) {
   const yaw    = analysis?.yaw_deg   ?? null;
   const pitch  = analysis?.pitch_deg ?? null;
 
-  const cardStyle = {
-    background: "#181d2e",
-    border: "1px solid #252b3d",
+  const cardStyle: React.CSSProperties = {
+    background: "var(--card)",
+    border: "1px solid var(--border)",
     borderRadius: 12,
     padding: "12px 14px",
     display: "flex",
     alignItems: "center",
     gap: 10,
-  } as const;
+  };
 
-  const iconBox = (ok: boolean | null, trueIcon: string, falseIcon: string) => ({
+  const iconBoxStyle = (ok: boolean | null, okBg: string, badBg: string): React.CSSProperties => ({
     width: 32,
     height: 32,
     borderRadius: 8,
@@ -32,32 +32,35 @@ export function StatusCards({ analysis }: Props) {
     justifyContent: "center",
     fontSize: 16,
     flexShrink: 0,
-    background: ok === null ? "#1a2535" : ok ? "#0f2a1e" : "#2a1a0f",
-  } as const);
+    background: ok === null ? "var(--bg-card, #1a2535)" : ok ? okBg : badBg,
+  });
 
   // Yaw color: green within ±10°, amber ±10–20°, red >20°
   const yawColor =
-    yaw === null ? "#6b7491"
-    : Math.abs(yaw) <= 10 ? "#22c55e"
-    : Math.abs(yaw) <= 20 ? "#f59e0b"
-    : "#ef4444";
+    yaw === null ? "var(--muted)"
+    : Math.abs(yaw) <= 10 ? "var(--green)"
+    : Math.abs(yaw) <= 20 ? "var(--amber)"
+    : "var(--red)";
 
   const pitchColor =
-    pitch === null ? "#6b7491"
-    : Math.abs(pitch) <= 10 ? "#22c55e"
-    : Math.abs(pitch) <= 20 ? "#f59e0b"
-    : "#ef4444";
+    pitch === null ? "var(--muted)"
+    : Math.abs(pitch) <= 10 ? "var(--green)"
+    : Math.abs(pitch) <= 20 ? "var(--amber)"
+    : "var(--red)";
+
+  const labelStyle: React.CSSProperties = { fontSize: 11, color: "var(--muted)" };
+  const valueStyle: React.CSSProperties = { fontSize: 13, fontWeight: 600, color: "var(--text)" };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
       {/* Head stability */}
       <div style={cardStyle}>
-        <div style={iconBox(headOk, "✅", "⚠️")}>
+        <div style={iconBoxStyle(headOk, "var(--green-bg)", "var(--amber-bg)")}>
           {headOk === null ? "🎯" : headOk ? "✅" : "⚠️"}
         </div>
         <div>
-          <div style={{ fontSize: 11, color: "#6b7491" }}>Head</div>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>
+          <div style={labelStyle}>Head</div>
+          <div style={valueStyle}>
             {headOk === null ? "—" : headOk ? "Stable" : "Moving"}
           </div>
         </div>
@@ -65,45 +68,37 @@ export function StatusCards({ analysis }: Props) {
 
       {/* Face detection */}
       <div style={cardStyle}>
-        <div style={iconBox(faceOk, "✅", "❌")}>
+        <div style={iconBoxStyle(faceOk, "var(--green-bg)", "var(--red-bg)")}>
           {faceOk === null ? "📷" : faceOk ? "✅" : "❌"}
         </div>
         <div>
-          <div style={{ fontSize: 11, color: "#6b7491" }}>Detection</div>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>
+          <div style={labelStyle}>Detection</div>
+          <div style={valueStyle}>
             {faceOk === null ? "—" : faceOk ? "Face found" : "No face"}
           </div>
         </div>
       </div>
 
-      {/* Head yaw (3-D, camera-offset corrected) */}
+      {/* Head yaw */}
       <div style={cardStyle}>
-        <div style={{
-          width: 32, height: 32, borderRadius: 8, display: "flex",
-          alignItems: "center", justifyContent: "center", fontSize: 16,
-          flexShrink: 0, background: "#1a2535",
-        }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0, background: "var(--bg-card, #1a2535)" }}>
           ↔️
         </div>
         <div>
-          <div style={{ fontSize: 11, color: "#6b7491" }}>Yaw</div>
+          <div style={labelStyle}>Yaw</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: yawColor }}>
             {yaw === null ? "—" : `${yaw > 0 ? "+" : ""}${yaw.toFixed(1)}°`}
           </div>
         </div>
       </div>
 
-      {/* Head pitch (camera-offset corrected) */}
+      {/* Head pitch */}
       <div style={cardStyle}>
-        <div style={{
-          width: 32, height: 32, borderRadius: 8, display: "flex",
-          alignItems: "center", justifyContent: "center", fontSize: 16,
-          flexShrink: 0, background: "#1a2535",
-        }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0, background: "var(--bg-card, #1a2535)" }}>
           ↕️
         </div>
         <div>
-          <div style={{ fontSize: 11, color: "#6b7491" }}>Pitch</div>
+          <div style={labelStyle}>Pitch</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: pitchColor }}>
             {pitch === null ? "—" : `${pitch > 0 ? "+" : ""}${pitch.toFixed(1)}°`}
           </div>

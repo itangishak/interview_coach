@@ -48,31 +48,28 @@ _YAW_THRESHOLD_DEG    = 25.0   # gate frames with |corrected yaw| beyond this
 _CALIB_SECONDS        = 2      # seconds of neutral recording at session start
 _SMILE_PEAK_PERCENTILE = 80    # percentile of smile window (captures events)
 
-# Body-movement normalization anchors (Item 4 — tightened from 0.003/0.047)
-# floor = combined variance typical of a motionless person
-# ceil  = combined variance of noticeable fidgeting
-# Both are in shoulder-width-normalized variance units.
-_MOVEMENT_FLOOR = 0.0003   # was 0.003 — floor now at actual desk-still level
-_MOVEMENT_CEIL  = 0.018    # was 0.047 — full range covers realistic fidgeting
+# Body-movement normalization anchors — module-level defaults.
+# Actual runtime values are loaded from interview_config.json["normalization"]
+# inside _load_config() so they can be tuned without touching source code.
+_MOVEMENT_FLOOR = 0.0003   # floor: combined variance of a desk-still person
+_MOVEMENT_CEIL  = 0.018    # ceil:  combined variance of noticeable fidgeting
 
-# Head-stability normalization coefficient (Item 4 — tightened from 0.15)
-# std_norm = std / (icd * _STABILITY_COEFF)
-# Smaller coeff → denominator smaller → same sway registers higher std_norm
-_STABILITY_COEFF = 0.06    # was 0.15 — captures realistic small head movements
+# Head-stability normalization coefficient — module-level default.
+_STABILITY_COEFF = 0.06    # std_norm = std / (icd * coeff)
 
 # Smile cheek-squint proxy (Item 6)
-# Duchenne smile contracts the distance between eye outer corner and cheekbone.
-# Landmark 36 (left lower outer eye region) and 346 (right) approximate this.
-# When the y-gap between 33↔116 (left) or 263↔345 (right) contracts, it's real.
 _SMILE_JAW_OPEN_THRESHOLD = 0.20   # mouth_height/icd ratio above which mouth is open
 _SMILE_SQUINT_WEIGHT      = 0.30   # blend: 30% squint, 70% mouth geometry
 
 # Posture lean penalty (Item 5)
-# Measures nose-to-shoulder-midpoint y-distance in shoulder-width units.
-# A healthy upright person: nose is ~1.5× shoulder-width above midpoint.
-# Threshold: if less than this ratio, a lean penalty is applied.
 _POSTURE_LEAN_RATIO_MIN   = 0.8    # nose must be at least 0.8× sw above midpoint
 _POSTURE_SHOULDER_VIS_MIN = 0.65   # raised from 0.5 (Item 5)
+
+# Gaze calibration (Item 6)
+# Number of frames captured during the "look at camera" phase at session start.
+# During this window the mean iris offset is recorded and used as the zero
+# reference for the eye contact metric, removing the camera-above-screen bias.
+_GAZE_CALIB_SECONDS_DEFAULT = 3
 
 # 3-D reference points (MediaPipe canonical model, in mm, OpenCV coords)
 # Used for solvePnP to obtain real yaw / pitch / roll from 2-D landmarks.
@@ -143,6 +140,19 @@ class InterviewAnalyzer:
         self.thresholds: dict[str, dict[str, float]] = {
             k: dict(v) for k, v in self._DEFAULT_THRESHOLDS.items()
         }
+
+        # Normalization anchors — overridable from config (Item 4)
+        self._movement_floor: float = _MOVEMENT_FLOOR
+        self._movement_ceil:  float = _MOVEMENT_CEIL
+        self._stability_coeff: float = _STABILITY_COEFF
+
+        # Gaze calibration (Item 6)
+        self._gaze_calib_seconds: int = _GAZE_CALIB_SECONDS_DEFAULT
+        self._gaze_calib_frames:  int = fps * _GAZE_CALIB_SECONDS_DEFAULT
+        self._gaze_calib_buffer:  list[float] = []   # raw iris offsets
+        self._gaze_calib_done:    bool = False
+        self._gaze_reference_offset: float = 0.0    # mean offset when looking at camera
+
         self._load_config(config_path)
 
         # Camera pitch offset (degrees) — how far the webcam sits above the
@@ -229,6 +239,18 @@ class InterviewAnalyzer:
         for metric, values in self.config.get("thresholds", {}).items():
             self.thresholds.setdefault(metric, {}).update(values)
 
+        # Item 4: load normalization anchors from config so they are tunable
+        # without touching source code.
+        norm = self.config.get("normalization", {})
+        self._movement_floor  = float(norm.get("movement_floor",  _MOVEMENT_FLOOR))
+        self._movement_ceil   = float(norm.get("movement_ceil",   _MOVEMENT_CEIL))
+        self._stability_coeff = float(norm.get("stability_coeff", _STABILITY_COEFF))
+
+        # Item 6: gaze calibration duration
+        gaze_secs = int(self.config.get("gaze_calibration_seconds", _GAZE_CALIB_SECONDS_DEFAULT))
+        self._gaze_calib_seconds = gaze_secs
+        self._gaze_calib_frames  = self.fps * gaze_secs
+
     # ──────────────────────────────────────────────────────────────────
     # Persistent profile I/O (Flaw E — cross-session)
     # ──────────────────────────────────────────────────────────────────
@@ -243,6 +265,11 @@ class InterviewAnalyzer:
             self._camera_pitch_offset_deg = float(
                 profile.get("camera_offset_deg", 0.0)
             )
+            # Item 6: restore persisted gaze reference offset if present
+            gaze_ref = float(profile.get("gaze_reference_offset", 0.0))
+            if gaze_ref != 0.0:
+                self._gaze_reference_offset = gaze_ref
+                self._gaze_calib_done = True
         except Exception:
             pass  # DB unavailable — degrade gracefully
 
@@ -343,6 +370,21 @@ class InterviewAnalyzer:
         icd       = float(np.linalg.norm(lm[33] - lm[263])) + 1e-6
         offset    = (nose_x - eye_mid_x) / icd
         return float(np.degrees(np.arctan(offset * 2.5)))
+
+    @classmethod
+    def _raw_iris_offset_from_lm(cls, lm: np.ndarray) -> float:
+        """Return raw mean iris offset (before gaze-reference correction).
+
+        This is the un-corrected value used for gaze calibration (Item 6).
+        The same geometry as _iris_score_from_lm, but returns the offset
+        directly so the calibration phase can record a reference baseline.
+        """
+        left_outer,  left_inner  = lm[33],  lm[133]
+        right_outer, right_inner = lm[362], lm[263]
+        left_iris,  right_iris   = lm[468], lm[473]
+        left_off  = cls._iris_gaze_offset(left_outer,  left_inner,  left_iris)
+        right_off = cls._iris_gaze_offset(right_outer, right_inner, right_iris)
+        return (left_off + right_off) / 2.0
 
     # Keep old name as alias
     @staticmethod
@@ -453,17 +495,19 @@ class InterviewAnalyzer:
         positions: list[np.ndarray],
         window_size: int,
         icd: float = 0.12,
+        stability_coeff: float | None = None,
     ) -> float | None:
         """Nose-position std normalized by ICD. Returns None when < 2 pts (Flaw D).
 
-        Item 4: coefficient tightened from 0.15 to _STABILITY_COEFF (0.06) so
-        that realistic small head sways register instead of always scoring ~1.0.
+        Item 4: coefficient loaded from config (default _STABILITY_COEFF=0.06).
+        Pass stability_coeff explicitly to use instance-level value from config.
         """
         if len(positions) < 2:
             return None
         arr = np.array(positions[-window_size:])
         std = float(np.std(arr, axis=0).mean())
-        std_norm = std / (icd * _STABILITY_COEFF + 1e-6)
+        coeff = stability_coeff if stability_coeff is not None else _STABILITY_COEFF
+        std_norm = std / (icd * coeff + 1e-6)
         return float(np.clip(1.0 - std_norm, 0.0, 1.0))
 
     @classmethod
@@ -481,12 +525,13 @@ class InterviewAnalyzer:
         displacements: list[float],
         window_size: int,
         shoulder_width: float = 0.20,
+        movement_floor: float | None = None,
+        movement_ceil: float | None = None,
     ) -> float | None:
         """Variance normalized by shoulder width (Flaw A). None when no data (Flaw D).
 
-        Item 4: floor/ceiling anchors tightened from 0.003/0.047 to
-        _MOVEMENT_FLOOR/_MOVEMENT_CEIL so typical desk movement registers
-        instead of permanently clipping to 1.0.
+        Item 4: floor/ceiling anchors loaded from config when called from
+        analyze_frame; fall back to module-level defaults for standalone use.
         """
         if len(shoulder_centers) < 2 and not displacements:
             return None
@@ -503,8 +548,10 @@ class InterviewAnalyzer:
             if displacements else 0.0
         )
         combined = 0.45 * shoulder_var + 0.35 * head_var + 0.20 * disp_mean
-        denom = max(_MOVEMENT_CEIL - _MOVEMENT_FLOOR, 1e-8)
-        return float(np.clip(1.0 - (combined - _MOVEMENT_FLOOR) / denom, 0.0, 1.0))
+        floor = movement_floor if movement_floor is not None else _MOVEMENT_FLOOR
+        ceil  = movement_ceil  if movement_ceil  is not None else _MOVEMENT_CEIL
+        denom = max(ceil - floor, 1e-8)
+        return float(np.clip(1.0 - (combined - floor) / denom, 0.0, 1.0))
 
     @classmethod
     def body_movement_from_buffers(
@@ -690,12 +737,27 @@ class InterviewAnalyzer:
             )
             head_turned = abs(yaw_deg) > _YAW_THRESHOLD_DEG
 
-        # ── Raw metric scores ─────────────────────────────────────────
-        # Eye contact: use solvePnP-corrected yaw gate instead of geometric
+        # ── Raw iris offset (used for gaze calibration and score) ─────
+        raw_iris_offset: float | None = None
         if face_lm_arr is not None and not head_turned:
-            raw_eye: float | None = self._iris_score_from_lm(face_lm_arr)
-        else:
-            raw_eye = None
+            raw_iris_offset = self._raw_iris_offset_from_lm(face_lm_arr)
+
+        # ── Item 6: Gaze calibration ───────────────────────────────────
+        # During the first _gaze_calib_frames valid face frames, record the
+        # mean iris offset while the person is assumed to be looking at the
+        # camera. After the window is full, set the reference offset so that
+        # "looking at camera" → corrected offset ≈ 0 → score ≈ 1.0.
+        if raw_iris_offset is not None and not self._gaze_calib_done:
+            self._gaze_calib_buffer.append(raw_iris_offset)
+            if len(self._gaze_calib_buffer) >= self._gaze_calib_frames:
+                self._gaze_reference_offset = float(np.mean(self._gaze_calib_buffer))
+                self._gaze_calib_done = True
+
+        # Apply gaze reference correction to get the eye contact score
+        raw_eye: float | None = None
+        if raw_iris_offset is not None:
+            corrected_offset = max(0.0, raw_iris_offset - self._gaze_reference_offset)
+            raw_eye = float(np.clip(1.0 - corrected_offset, 0.0, 1.0))
 
         raw_smile = self.raw_smile_score(face_lm_raw)
         raw_pos   = self.posture_score(pose_lm_raw, shoulder_w)
@@ -711,32 +773,59 @@ class InterviewAnalyzer:
                 )
             self.shoulder_centers.append(center)
 
-        raw_head = self.head_stability_score(list(self.nose_positions), self.window_size, icd)
+        # Pass instance-level anchors from config (Item 4)
+        raw_head = self.head_stability_score(
+            list(self.nose_positions), self.window_size, icd,
+            stability_coeff=self._stability_coeff,
+        )
         raw_move = self.body_movement_score(
             list(self.shoulder_centers),
             list(self.nose_positions),
             list(self.movement_displacements),
             self.window_size,
             shoulder_w,
+            movement_floor=self._movement_floor,
+            movement_ceil=self._movement_ceil,
         )
 
         # ── Gate: face absent OR head turned beyond threshold ─────────
         excluded = not face_visible or raw_eye is None
 
+        # ── EMA update ────────────────────────────────────────────────
+        # Item 1: separate internal EMA state (frozen when excluded, for
+        # warm-up continuity) from emitted wire values (0 when excluded so
+        # the frontend never shows stale numbers as live readings).
         if not excluded:
-            eye_contact = self._ema_update("eye_contact", raw_eye)   # type: ignore[arg-type]
+            eye_contact    = self._ema_update("eye_contact", raw_eye)   # type: ignore[arg-type]
             self.smile_raw_window.append(raw_smile or 0.0)
-            smile_peak = float(np.percentile(list(self.smile_raw_window), _SMILE_PEAK_PERCENTILE))
-            smile = self._ema_update("smile", smile_peak)
-            posture       = self._ema_update("posture",        raw_pos)   if raw_pos   is not None else self._ema["posture"]
-            head_stability = self._ema_update("head_stability", raw_head) if raw_head  is not None else self._ema["head_stability"]
-            body_movement  = self._ema_update("body_movement",  raw_move) if raw_move  is not None else self._ema["body_movement"]
+            smile_peak     = float(np.percentile(list(self.smile_raw_window), _SMILE_PEAK_PERCENTILE))
+            smile          = self._ema_update("smile", smile_peak)
+            posture        = self._ema_update("posture",        raw_pos)  if raw_pos  is not None else self._ema["posture"]
+            head_stability = self._ema_update("head_stability", raw_head) if raw_head is not None else self._ema["head_stability"]
+            body_movement  = self._ema_update("body_movement",  raw_move) if raw_move is not None else self._ema["body_movement"]
+            # Emit real values
+            emit_eye_contact    = eye_contact
+            emit_smile          = smile
+            emit_posture        = posture
+            emit_head_stability = head_stability
+            emit_body_movement  = body_movement
+            face_valid = True
+            pose_valid = pose_visible
         else:
+            # Keep frozen EMA for internal warm-up continuity
             eye_contact    = self._ema["eye_contact"]
             smile          = self._ema["smile"]
             posture        = self._ema["posture"]
             head_stability = self._ema["head_stability"]
             body_movement  = self._ema["body_movement"]
+            # Emit 0 so the frontend shows inactive state, not stale readings
+            emit_eye_contact    = 0.0
+            emit_smile          = 0.0
+            emit_posture        = 0.0 if not pose_visible else posture
+            emit_head_stability = 0.0
+            emit_body_movement  = 0.0 if not pose_visible else body_movement
+            face_valid = False
+            pose_valid = pose_visible
 
         if not excluded:
             self._update_calibration({
@@ -754,7 +843,7 @@ class InterviewAnalyzer:
         adj_mv = self._deviation_from_baseline("body_movement",  body_movement)
 
         features = np.array([adj_ec, adj_sm, adj_ps, adj_hs, adj_mv], dtype=np.float32)
-        confidence = self._compute_confidence(features)
+        confidence = self._compute_confidence(features) if not excluded else 0.0
 
         feedback = self.feedback_engine.generate(
             eye_contact    = eye_contact,
@@ -768,23 +857,87 @@ class InterviewAnalyzer:
             label_fn       = self._label_with_hysteresis,
         )
 
-        return {
-            "eye_contact":     round(eye_contact,     3),
-            "smile":           round(smile,           3),
-            "posture":         round(posture,          3),
-            "head_stability":  round(head_stability,   3),
-            "body_movement":   round(body_movement,    3),
-            "confidence":      round(confidence,       1),
-            "feedback":        feedback,
-            "face_visible":    face_visible,
-            "pose_visible":    pose_visible,
-            "excluded":        excluded,
-            "yaw_deg":         round(yaw_deg,          1),
-            "pitch_deg":       round(pitch_deg,        1),
+        payload: dict[str, Any] = {
+            # Item 1: emit wire values (0 when excluded), not frozen EMA
+            "eye_contact":    round(emit_eye_contact,    3),
+            "smile":          round(emit_smile,          3),
+            "posture":        round(emit_posture,        3),
+            "head_stability": round(emit_head_stability, 3),
+            "body_movement":  round(emit_body_movement,  3),
+            "confidence":     round(confidence,          1),
+            "feedback":       feedback,
+            "face_visible":   face_visible,
+            "pose_visible":   pose_visible,
+            # Item 1: explicit per-metric validity flags for the frontend
+            "face_valid":     face_valid,
+            "pose_valid":     pose_valid,
+            # Item 3: calibrating flag so frontend can grey out metric cards
+            "calibrating":    not self._calibrated,
+            # Item 6: gaze calibration phase indicator
+            "gaze_calibrating": not self._gaze_calib_done,
+            "excluded":       excluded,
+            "yaw_deg":        round(yaw_deg,   1),
+            "pitch_deg":      round(pitch_deg, 1),
             # Legacy aliases
-            "face_detected":   face_visible,
-            "pose_detected":   pose_visible,
+            "face_detected":  face_visible,
+            "pose_detected":  pose_visible,
         }
+
+        # ── Item 8: Diagnostic payload ────────────────────────────────
+        # Only appended when diagnostic_mode=True to keep normal payloads lean.
+        if self.diagnostic_mode:
+            landmarks: dict[str, list[float]] = {}
+            if face_lm_arr is not None:
+                for lm_name, idx in {
+                    "nose_tip": 1, "nose_bridge": 168, "chin": 152,
+                    "left_eye_outer": 33, "left_eye_inner": 133,
+                    "right_eye_inner": 362, "right_eye_outer": 263,
+                    "left_iris": 468, "right_iris": 473,
+                    "left_mouth": 61, "right_mouth": 291,
+                }.items():
+                    if idx < len(face_lm_arr):
+                        landmarks[lm_name] = [
+                            round(float(face_lm_arr[idx][0]), 4),
+                            round(float(face_lm_arr[idx][1]), 4),
+                        ]
+            if pose_lm_arr is not None:
+                for lm_name, idx in {
+                    "left_shoulder": 11, "right_shoulder": 12,
+                    "left_hip": 23, "right_hip": 24,
+                }.items():
+                    if idx < len(pose_lm_arr):
+                        landmarks[lm_name] = [
+                            round(float(pose_lm_arr[idx][0]), 4),
+                            round(float(pose_lm_arr[idx][1]), 4),
+                        ]
+            payload["diagnostic"] = {
+                "face_visible": face_visible, "pose_visible": pose_visible, "excluded": excluded,
+                "yaw_deg": round(yaw_deg, 2), "pitch_deg": round(pitch_deg, 2), "roll_deg": round(roll_deg, 2),
+                "icd": round(icd, 4), "shoulder_width": round(shoulder_w, 4),
+                "raw_eye_contact":    round(raw_eye,   3) if raw_eye   is not None else None,
+                "raw_iris_offset":    round(raw_iris_offset, 4) if raw_iris_offset is not None else None,
+                "raw_smile":          round(raw_smile, 3) if raw_smile is not None else None,
+                "raw_posture":        round(raw_pos,   3) if raw_pos   is not None else None,
+                "raw_head_stability": round(raw_head,  3) if raw_head  is not None else None,
+                "raw_body_movement":  round(raw_move,  3) if raw_move  is not None else None,
+                "ema_eye_contact":    round(self._ema["eye_contact"],    3),
+                "ema_smile":          round(self._ema["smile"],          3),
+                "ema_posture":        round(self._ema["posture"],        3),
+                "ema_head_stability": round(self._ema["head_stability"], 3),
+                "ema_body_movement":  round(self._ema["body_movement"],  3),
+                "gaze_reference_offset": round(self._gaze_reference_offset, 4),
+                "gaze_calibrating":   not self._gaze_calib_done,
+                "gaze_calib_frames":  len(self._gaze_calib_buffer),
+                "calibrated":         self._calibrated,
+                "baseline":           {k: round(v, 3) for k, v in self._baseline.items()},
+                "frame_count":        len(self.nose_positions),
+                "movement_floor":     self._movement_floor,
+                "movement_ceil":      self._movement_ceil,
+                "stability_coeff":    self._stability_coeff,
+                "landmarks":          landmarks,
+            }
+
+        return payload
 
     def _compute_confidence(self, features: np.ndarray) -> float:
         weights = np.array(
@@ -807,6 +960,9 @@ class InterviewAnalyzer:
         }
         self._label_state.clear()
         self._calib_buffer.clear()
+        # Reset gaze calibration (Item 6) — re-calibrate each session
+        self._gaze_calib_buffer.clear()
+        self._gaze_calib_done = bool(self._gaze_reference_offset != 0.0)  # keep persisted ref
         # Reload persisted baseline so new session starts pre-calibrated
         self._load_persistent_profile()
         self._baseline = dict(self._persisted_baseline)

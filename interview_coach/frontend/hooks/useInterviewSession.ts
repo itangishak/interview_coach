@@ -12,7 +12,7 @@ export interface InterviewSessionState {
   analysis: AnalysisPayload | null;
   summary: SessionSummary | null;
   sessionId: string | null;
-  startSession: () => void;
+  startSession: (opts?: { diagnosticMode?: boolean }) => void;
   stopSession: () => void;
 }
 
@@ -125,7 +125,7 @@ export function useInterviewSession(userId?: string): InterviewSessionState {
     ws.send(JSON.stringify({ type: "frame", image: dataUrl }));
   }, []);
 
-  const startSession = useCallback(async () => {
+  const startSession = useCallback(async (opts?: { diagnosticMode?: boolean }) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
@@ -163,7 +163,12 @@ export function useInterviewSession(userId?: string): InterviewSessionState {
     setAnalysis(null);
     const sid = crypto.randomUUID();
     pendingStartRef.current = sid;
-    ws.send(JSON.stringify({ type: "start", session_id: sid, ...(userId ? { user_id: userId } : {}) }));
+    ws.send(JSON.stringify({
+      type: "start",
+      session_id: sid,
+      diagnostic: opts?.diagnosticMode ?? false,
+      ...(userId ? { user_id: userId } : {}),
+    }));
     setActive(true);
 
     frameTimerRef.current = setInterval(captureAndSend, FRAME_INTERVAL_MS);
