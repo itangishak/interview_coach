@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import uuid
@@ -19,24 +20,27 @@ from app.services.user_profile_service import UserProfileService
 
 router = APIRouter(tags=["interview"])
 
+# ── Lazy singleton accessors ──────────────────────────────────────────────────
+# SingletonMeta is now lock-free, so calling these inside async handlers
+# is safe: the worst case is a harmless double-creation race that
+# immediately discards the extra instance.  The FastAPI lifespan in
+# main.py pre-warms them in a thread pool before serving traffic.
+def _sessions() -> SessionService:
+    return SessionService()
+
+def _profiles() -> UserProfileService:
+    return UserProfileService()
+
 
 @router.websocket("/ws/interview")
 async def interview_stream(websocket: WebSocket):
-    """Receive base64 webcam frames and stream per-frame analysis.
-
-    Start message may include an optional ``user_id`` field.  When present,
-    the analyzer loads the user's persisted baseline so the first frame is
-    already calibrated, and the baseline is saved back when the session ends.
-
-    Example start message:
-        {"type": "start", "session_id": "...", "user_id": "alice"}
-    """
+    """Receive base64 webcam frames and stream per-frame analysis."""
     await websocket.accept()
     settings = get_settings()
     analyzer: InterviewAnalyzer | None = None
-    sessions = SessionService()
     session_id: str | None = None
     fps = settings.interview.target_fps
+    loop = asyncio.get_event_loop()
 
     try:
         while True:
@@ -46,17 +50,19 @@ async def interview_stream(websocket: WebSocket):
 
             if msg_type == "start":
                 session_id = data.get("session_id") or str(uuid.uuid4())
-                user_id        = data.get("user_id") or None
-                diagnostic     = bool(data.get("diagnostic", False))
-                analyzer       = InterviewAnalyzer(user_id=user_id, diagnostic_mode=diagnostic)
+                user_id    = data.get("user_id") or None
+                diagnostic = bool(data.get("diagnostic", False))
+                analyzer   = InterviewAnalyzer(user_id=user_id, diagnostic_mode=diagnostic)
                 analyzer.reset()
-                started = sessions.start_session(session_id)
+                # Run blocking DB write in thread pool — keeps event loop free
+                started = await loop.run_in_executor(
+                    None, _sessions().start_session, session_id
+                )
                 await websocket.send_json({"type": "status", "payload": started})
                 continue
 
             if msg_type == "frame":
                 if analyzer is None:
-                    # Auto-start an anonymous session if client skipped "start"
                     analyzer = InterviewAnalyzer()
                 image_b64 = data.get("image", "")
                 if not image_b64:
@@ -72,9 +78,12 @@ async def interview_stream(websocket: WebSocket):
                 if frame is None:
                     continue
 
-                result = analyzer.analyze_frame(frame)
+                # analyze_frame is CPU-bound — run in executor to avoid blocking
+                result = await loop.run_in_executor(None, analyzer.analyze_frame, frame)
                 if session_id:
-                    sessions.append_frame(session_id, result)
+                    await loop.run_in_executor(
+                        None, _sessions().append_frame, session_id, result
+                    )
 
                 await websocket.send_json({"type": "analysis", "payload": result})
                 continue
@@ -85,21 +94,22 @@ async def interview_stream(websocket: WebSocket):
                         {"type": "summary", "payload": {"error": "No active session"}}
                     )
                     continue
-                summary = sessions.build_summary(session_id, fps=fps)
-                sessions.end_session(session_id, summary)
-
-                # Persist the session baseline for the user (Flaw E full fix)
+                summary = await loop.run_in_executor(
+                    None, lambda: _sessions().build_summary(session_id, fps=fps)
+                )
+                await loop.run_in_executor(
+                    None, _sessions().end_session, session_id, summary
+                )
                 if analyzer is not None:
-                    analyzer.save_session_baseline()
+                    await loop.run_in_executor(None, analyzer.save_session_baseline)
 
                 await websocket.send_json({"type": "summary", "payload": summary})
                 continue
 
     except WebSocketDisconnect:
-        # Best-effort: save baseline even on disconnect
         if analyzer is not None:
             try:
-                analyzer.save_session_baseline()
+                await loop.run_in_executor(None, analyzer.save_session_baseline)
             except Exception:
                 pass
         return
@@ -109,14 +119,14 @@ async def interview_stream(websocket: WebSocket):
 
 @router.get("/interview/sessions")
 async def list_sessions(limit: int = 20) -> dict[str, Any]:
-    sessions = SessionService()
-    return {"sessions": sessions.list_sessions(limit=limit)}
+    loop = asyncio.get_event_loop()
+    return {"sessions": await loop.run_in_executor(None, lambda: _sessions().list_sessions(limit=limit))}
 
 
 @router.get("/interview/sessions/{session_id}")
 async def get_session_summary(session_id: str) -> dict[str, Any]:
-    sessions = SessionService()
-    record = sessions.get_session(session_id)
+    loop = asyncio.get_event_loop()
+    record = await loop.run_in_executor(None, _sessions().get_session, session_id)
     if record is None:
         return {"error": "Session not found"}
     return record
@@ -124,13 +134,14 @@ async def get_session_summary(session_id: str) -> dict[str, Any]:
 
 @router.get("/interview/sessions/{session_id}/report")
 async def get_session_report(session_id: str) -> dict[str, Any]:
-    """Aggregated metrics and recommendations for the session report modal."""
-    sessions = SessionService()
-    record = sessions.get_session(session_id)
+    loop = asyncio.get_event_loop()
+    record = await loop.run_in_executor(None, _sessions().get_session, session_id)
     if record is None:
         return {"error": "Session not found"}
 
-    summary = record.get("summary") or sessions.build_summary(session_id)
+    summary = record.get("summary") or await loop.run_in_executor(
+        None, _sessions().build_summary, session_id
+    )
     return {
         "session_id":      session_id,
         "started_at":      record["started_at"],
@@ -150,8 +161,8 @@ async def get_session_report(session_id: str) -> dict[str, Any]:
 
 @router.get("/interview/profiles/{user_id}")
 async def get_profile(user_id: str) -> dict[str, Any]:
-    """Return the stored baseline and camera offset for a user."""
-    return UserProfileService().get_profile(user_id)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _profiles().get_profile, user_id)
 
 
 class CameraOffsetPayload(BaseModel):
@@ -160,16 +171,14 @@ class CameraOffsetPayload(BaseModel):
 
 @router.post("/interview/profiles/{user_id}/camera-offset")
 async def set_camera_offset(user_id: str, payload: CameraOffsetPayload) -> dict[str, Any]:
-    """Persist the per-user camera-above-screen pitch offset (degrees).
-
-    Typical values are –8 to –12 (webcam sits above the screen so genuine eye
-    contact reads as slightly downward).  Call this once after asking the user
-    to look directly at the interviewer's face on screen.
-    """
-    UserProfileService().update_camera_offset(user_id, pitch_deg=payload.pitch_deg)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, lambda: _profiles().update_camera_offset(user_id, pitch_deg=payload.pitch_deg)
+    )
     return {"user_id": user_id, "camera_pitch_offset_deg": payload.pitch_deg, "saved": True}
 
 
 @router.get("/interview/profiles")
 async def list_profiles() -> dict[str, Any]:
-    return {"profiles": UserProfileService().list_profiles()}
+    loop = asyncio.get_event_loop()
+    return {"profiles": await loop.run_in_executor(None, _profiles().list_profiles)}

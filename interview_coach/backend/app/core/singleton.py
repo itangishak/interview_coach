@@ -1,22 +1,22 @@
-"""Singleton metaclass — thread-safe, one shared instance per process.
+"""Singleton metaclass — one shared instance per process.
 
 Demonstrates:
   - Metaclass (SingletonMeta)
   - Class-level __slots__ on the metaclass registry
-  - Thread-safety via threading.Lock (global variable used intentionally)
+  - Lock-free instance caching (safe under Python's GIL)
   - __call__ override (special method / dunder)
   - clear() classmethod for test isolation
 """
 from __future__ import annotations
 
-import threading
-
-# ── Module-level (global) lock — shared across all Singleton subclasses ───────
-_SINGLETON_LOCK: threading.Lock = threading.Lock()
-
 
 class SingletonMeta(type):
     """Metaclass that enforces one instance per concrete class.
+
+    Lock-free: Python's GIL makes dict get/set atomic enough for
+    this pattern.  The worst-case race creates one extra instance
+    that is immediately discarded — no thread ever blocks, so the
+    asyncio event loop cannot freeze.
 
     Usage
     -----
@@ -28,12 +28,13 @@ class SingletonMeta(type):
     _instances: dict[type, object] = {}
 
     def __call__(cls, *args, **kwargs):
-        # Double-checked locking: cheap read first, lock only when needed
+        # Fast path: already instantiated
         if cls not in cls._instances:
-            with _SINGLETON_LOCK:
-                if cls not in cls._instances:                     # second check inside lock
-                    instance = super().__call__(*args, **kwargs)
-                    cls._instances[cls] = instance
+            instance = super().__call__(*args, **kwargs)
+            # Second check: another thread may have stored an instance
+            # while we were creating ours.
+            if cls not in cls._instances:
+                cls._instances[cls] = instance
         return cls._instances[cls]
 
     @classmethod
@@ -42,11 +43,10 @@ class SingletonMeta(type):
 
         Positional-or-keyword parameter: target (optional).
         """
-        with _SINGLETON_LOCK:
-            if target is None:
-                mcs._instances.clear()
-            else:
-                mcs._instances.pop(target, None)
+        if target is None:
+            mcs._instances.clear()
+        else:
+            mcs._instances.pop(target, None)
 
     def __repr__(cls) -> str:
         has_instance = cls in SingletonMeta._instances
