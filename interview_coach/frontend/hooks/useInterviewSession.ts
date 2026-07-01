@@ -29,14 +29,59 @@ export function useInterviewSession(): InterviewSessionState {
   const frameTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // Connect WebSocket once on mount
-  useEffect(() => {
+  // Reconnect bookkeeping
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const intentionalCloseRef = useRef(false);
+  const pendingStartRef = useRef<string | null>(null);
+
+  const clearReconnect = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleReconnect = useCallback(() => {
+    clearReconnect();
+    if (intentionalCloseRef.current) return;
+
+    const delay = Math.min(1000 * 2 ** reconnectAttemptRef.current, 30000);
+    reconnectAttemptRef.current += 1;
+
+    reconnectTimerRef.current = setTimeout(() => {
+      connect(); // eslint-disable-line @typescript-eslint/no-use-before-define
+    }, delay);
+  }, [clearReconnect]);
+
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (intentionalCloseRef.current) return;
+
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
 
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => { setConnected(false); setActive(false); };
-    ws.onerror = () => setConnected(false);
+    ws.onopen = () => {
+      setConnected(true);
+      reconnectAttemptRef.current = 0;
+      // If we have a pending session start (e.g. after reconnect), resend it
+      if (pendingStartRef.current) {
+        ws.send(JSON.stringify({ type: "start", session_id: pendingStartRef.current }));
+      }
+    };
+
+    ws.onclose = () => {
+      setConnected(false);
+      wsRef.current = null;
+      // Only reconnect if the user did NOT intentionally stop
+      if (!intentionalCloseRef.current) {
+        scheduleReconnect();
+      }
+    };
+
+    ws.onerror = () => {
+      setConnected(false);
+    };
 
     ws.onmessage = (event: MessageEvent) => {
       const msg = JSON.parse(event.data) as WSMessage;
@@ -47,11 +92,22 @@ export function useInterviewSession(): InterviewSessionState {
       } else if (msg.type === "summary") {
         setSummary(msg.payload);
         setActive(false);
+        pendingStartRef.current = null;
       }
     };
+  }, [scheduleReconnect]);
 
-    return () => { ws.close(); };
-  }, []);
+  // Connect on mount, cleanup on unmount
+  useEffect(() => {
+    intentionalCloseRef.current = false;
+    connect();
+    return () => {
+      intentionalCloseRef.current = true;
+      clearReconnect();
+      wsRef.current?.close();
+      wsRef.current = null;
+    };
+  }, [connect, clearReconnect]);
 
   const captureAndSend = useCallback(() => {
     const ws = wsRef.current;
@@ -106,6 +162,7 @@ export function useInterviewSession(): InterviewSessionState {
     setSummary(null);
     setAnalysis(null);
     const sid = crypto.randomUUID();
+    pendingStartRef.current = sid;
     ws.send(JSON.stringify({ type: "start", session_id: sid }));
     setActive(true);
 
@@ -127,6 +184,7 @@ export function useInterviewSession(): InterviewSessionState {
       ws.send(JSON.stringify({ type: "stop" }));
     }
     setActive(false);
+    pendingStartRef.current = null;
   }, []);
 
   return { connected, active, analysis, summary, sessionId, startSession, stopSession };
