@@ -165,7 +165,7 @@ async def set_camera_offset(user_id: str, payload: CameraOffsetPayload) -> dict[
     contact reads as slightly downward).  Call this once after asking the user
     to look directly at the interviewer's face on screen.
     """
-    UserProfileService().update_camera_offset(user_id, payload.pitch_deg)
+    UserProfileService().update_camera_offset(user_id, pitch_deg=payload.pitch_deg)
     return {"user_id": user_id, "camera_pitch_offset_deg": payload.pitch_deg, "saved": True}
 
 

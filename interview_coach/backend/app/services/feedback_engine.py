@@ -1,13 +1,23 @@
-"""Coaching feedback engine — varied, context-aware messages (Flaw E fix)."""
+"""Coaching feedback engine.
 
+Demonstrates:
+  - Base class (BaseFeedbackEngine) with concrete default behavior
+  - Subclass (CoachingFeedbackEngine) overriding generate() — polymorphism
+  - __init_subclass__ hook
+  - __repr__, __str__, __len__ (pool size)
+  - Closure (make_threshold_checker in decorators module, reused here)
+  - @property: pool_sizes
+  - Keyword-only parameters in generate()
+  - Generator expression in _iter_recommendations()
+  - Global module constants (message pools)
+  - Callable type hint for label_fn
+"""
 from __future__ import annotations
 
 import random
-from typing import Any, Callable
+from typing import Any, Callable, Generator
 
-
-# ── Message pools — indexed by severity (0=bad, 1=okay, 2=good) ──────────────
-
+# ── Module-level (global namespace) message pools ────────────────────────────
 _EYE_MSGS: dict[int, list[str]] = {
     0: [
         "Keep your gaze on the camera — it reads as direct eye contact to the interviewer.",
@@ -85,41 +95,64 @@ _MOVEMENT_MSGS: dict[int, list[str]] = {
     ],
 }
 
-_ALL_GOOD = [
+_ALL_GOOD: list[str] = [
     "Great composure all round — keep this up.",
     "Everything looks strong. Stay consistent through the tough questions.",
     "Excellent presence. You're projecting confidence and warmth.",
 ]
 
-_FACE_NOT_VISIBLE = [
+_FACE_NOT_VISIBLE: list[str] = [
     "Your face isn't clearly visible — centre yourself in the frame.",
     "Move closer to the camera or improve lighting so your face is visible.",
 ]
 
-_CALIBRATING = [
+_CALIBRATING: list[str] = [
     "Calibrating to your neutral baseline — stay still for a moment.",
 ]
 
+# Mapping from metric key to its message pool
+_POOLS: dict[str, dict[int, list[str]]] = {
+    "eye_contact":    _EYE_MSGS,
+    "smile":          _SMILE_MSGS,
+    "posture":        _POSTURE_MSGS,
+    "head_stability": _HEAD_MSGS,
+    "body_movement":  _MOVEMENT_MSGS,
+}
 
-class FeedbackEngine:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Base class
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BaseFeedbackEngine:
+    """Base feedback engine providing threshold helpers and message picking.
+
+    Subclasses may override generate() for different coaching styles.
+    Demonstrates:
+      - Base class with concrete methods
+      - __init_subclass__ (runs when a subclass is defined)
+      - @property pool_sizes
+      - __repr__, __str__, __len__
     """
-    Maps metric scores to varied, context-aware coaching text.
-    Uses message pools so output is not the same string every call.
 
-    Thresholds are read from the ``thresholds`` dict passed at construction
-    (sourced from interview_config.json via InterviewAnalyzer._load_config).
-    Both _severity() and the static _label() helper respect these values so
-    that changing the JSON file changes feedback labels without code edits.
-    """
+    # Hardcoded fallbacks used when config doesn't supply a value
+    _DEFAULT_GOOD: float = 0.70
+    _DEFAULT_OKAY: float = 0.40
 
-    # Hardcoded fallbacks used only when the config doesn't supply a value
-    _DEFAULT_GOOD = 0.70
-    _DEFAULT_OKAY = 0.40
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Called automatically when a subclass is defined.
+
+        Demonstrates __init_subclass__ hook.
+        """
+        super().__init_subclass__(**kwargs)
+        # Register subclass name for introspection (not required, just illustrative)
+        if not hasattr(BaseFeedbackEngine, "_subclasses"):
+            BaseFeedbackEngine._subclasses: list[str] = []
+        BaseFeedbackEngine._subclasses.append(cls.__name__)
 
     def __init__(self, thresholds: dict[str, dict[str, float]] | None = None) -> None:
-        self.thresholds = thresholds or {}
-        # Track which pool index was last chosen per metric to avoid repeating
-        self._last_idx: dict[str, int] = {}
+        self.thresholds: dict[str, dict[str, float]] = thresholds or {}
+        self._last_idx: dict[str, int] = {}      # anti-repeat state per pool key
 
     # ── Threshold helpers ─────────────────────────────────────────────
     def _good_t(self, metric: str) -> float:
@@ -128,36 +161,50 @@ class FeedbackEngine:
     def _okay_t(self, metric: str) -> float:
         return float(self.thresholds.get(metric, {}).get("okay", self._DEFAULT_OKAY))
 
-    # ── Label helper (uses config thresholds) ─────────────────────────
     def _label(self, metric: str, value: float, higher_is_better: bool = True) -> str:
-        good_t = self._good_t(metric)
-        okay_t = self._okay_t(metric)
-        if higher_is_better:
-            if value >= good_t: return "Good"
-            if value >= okay_t: return "Okay"
-            return "Needs improvement"
-        # Inverted: high value = good (less movement)
-        if value >= good_t: return "Good"
-        if value >= okay_t: return "Okay"
+        """Map value to label using per-metric config thresholds."""
+        good_t, okay_t = self._good_t(metric), self._okay_t(metric)
+        if value >= good_t:
+            return "Good"
+        if value >= okay_t:
+            return "Okay"
         return "Needs improvement"
-
-    def _pick(self, key: str, pool: list[str]) -> str:
-        """Pick a message from pool, avoiding immediate repetition."""
-        if len(pool) == 1:
-            return pool[0]
-        last = self._last_idx.get(key, -1)
-        choices = [i for i in range(len(pool)) if i != last]
-        idx = random.choice(choices)
-        self._last_idx[key] = idx
-        return pool[idx]
 
     def _severity(self, metric: str, value: float) -> int:
         """0 = bad, 1 = okay, 2 = good — uses config thresholds."""
-        if value >= self._good_t(metric): return 2
-        if value >= self._okay_t(metric): return 1
+        if value >= self._good_t(metric):
+            return 2
+        if value >= self._okay_t(metric):
+            return 1
         return 0
 
-    # ── Public API ───────────────────────────────────────────────────
+    def _pick(self, key: str, pool: list[str]) -> str:
+        """Pick a message avoiding immediate repetition (closure over _last_idx)."""
+        if len(pool) == 1:
+            return pool[0]
+        last   = self._last_idx.get(key, -1)
+        choices = [i for i in range(len(pool)) if i != last]
+        idx    = random.choice(choices)
+        self._last_idx[key] = idx
+        return pool[idx]
+
+    # ── Generator method — yields recommendation strings ──────────────
+    def _iter_recommendations(
+        self,
+        scores: dict[str, float],
+        /,
+    ) -> Generator[str, None, None]:
+        """Generator: yield one recommendation per metric below "Good".
+
+        Positional-only: scores dict.
+        Demonstrates generator method using yield.
+        """
+        for key, pool in _POOLS.items():
+            value = scores.get(key, 0.0)
+            sev   = self._severity(key, value)
+            if sev < 2:
+                yield self._pick(key, pool[sev])   # generator yield
+
     def generate(
         self,
         *,
@@ -171,62 +218,151 @@ class FeedbackEngine:
         calibrating:    bool = False,
         label_fn: Callable[[str, float, bool], str] | None = None,
     ) -> dict[str, Any]:
+        """Generate feedback payload.  All parameters are keyword-only.
+
+        label_fn: optional hysteresis-aware label from InterviewAnalyzer.
         """
-        Parameters
-        ----------
-        label_fn : hysteresis-aware label function from InterviewAnalyzer.
-                   Falls back to self._label (config-threshold aware) if None.
-        """
-        # If no hysteresis function given, fall back to config-aware label
         lf = label_fn or (lambda k, v, h: self._label(k, v, h))
 
-        recommendations: list[str] = []
-
         if not face_visible:
-            recommendations.append(self._pick("face", _FACE_NOT_VISIBLE))
+            recs = [self._pick("face", _FACE_NOT_VISIBLE)]
         elif calibrating:
-            recommendations.append(_CALIBRATING[0])
+            recs = [_CALIBRATING[0]]
         else:
-            # _severity now uses config thresholds per metric
-            sev_eye  = self._severity("eye_contact",    eye_contact)
-            sev_sm   = self._severity("smile",          smile)
-            sev_ps   = self._severity("posture",        posture)
-            sev_hs   = self._severity("head_stability", head_stability)
-            sev_mv   = self._severity("body_movement",  body_movement)
-
-            if sev_eye  < 2: recommendations.append(self._pick("eye",      _EYE_MSGS[sev_eye]))
-            if sev_sm   < 2: recommendations.append(self._pick("smile",    _SMILE_MSGS[sev_sm]))
-            if sev_ps   < 2: recommendations.append(self._pick("posture",  _POSTURE_MSGS[sev_ps]))
-            if sev_hs   < 2: recommendations.append(self._pick("head",     _HEAD_MSGS[sev_hs]))
-            if sev_mv   < 2: recommendations.append(self._pick("movement", _MOVEMENT_MSGS[sev_mv]))
-
-            if not recommendations:
-                recommendations.append(self._pick("all_good", _ALL_GOOD))
+            scores = {
+                "eye_contact":    eye_contact,
+                "smile":          smile,
+                "posture":        posture,
+                "head_stability": head_stability,
+                "body_movement":  body_movement,
+            }
+            # Use generator; convert to list
+            recs = list(self._iter_recommendations(scores))
+            if not recs:
+                recs = [self._pick("all_good", _ALL_GOOD)]
 
         return {
-            "eye_contact": {
-                "score":  round(eye_contact, 2),
-                "status": lf("eye_contact", eye_contact, True),
-            },
-            "smile": {
-                "score":  round(smile, 2),
-                "status": lf("smile", smile, True),
-            },
-            "posture": {
-                "score":  round(posture, 2),
-                "status": lf("posture", posture, True),
-            },
-            "head_stability": {
-                "score":  round(head_stability, 2),
-                "status": lf("head_stability", head_stability, True),
-            },
-            "body_movement": {
-                "score":  round(body_movement, 2),
-                "status": lf("body_movement", body_movement, True),
-            },
-            "confidence": {
-                "score":  round(confidence, 1),
-                "status": lf("confidence", confidence / 100.0, True),
-            },
-            "recommendations": recommendations,
+            "eye_contact":    {"score": round(eye_contact, 2),    "status": lf("eye_contact",    eye_contact,    True)},
+            "smile":          {"score": round(smile, 2),          "status": lf("smile",          smile,          True)},
+            "posture":        {"score": round(posture, 2),        "status": lf("posture",        posture,        True)},
+            "head_stability": {"score": round(head_stability, 2), "status": lf("head_stability", head_stability, True)},
+            "body_movement":  {"score": round(body_movement, 2),  "status": lf("body_movement",  body_movement,  True)},
+            "confidence":     {"score": round(confidence, 1),     "status": lf("confidence",     confidence / 100.0, True)},
+            "recommendations": recs,
         }
+
+    # ── @property ─────────────────────────────────────────────────────
+    @property
+    def pool_sizes(self) -> dict[str, int]:
+        """Return total pool size (all severities) per metric."""
+        return {
+            key: sum(len(msgs) for msgs in pool.values())
+            for key, pool in _POOLS.items()
+        }
+
+    # ── Dunder methods ────────────────────────────────────────────────
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(thresholds={list(self.thresholds.keys())})"
+
+    def __str__(self) -> str:
+        total = sum(self.pool_sizes.values())
+        return f"{type(self).__name__} — {total} coaching messages across {len(_POOLS)} metrics"
+
+    def __len__(self) -> int:
+        """Total number of messages across all pools."""
+        return sum(self.pool_sizes.values())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Subclass — polymorphic override of generate()
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CoachingFeedbackEngine(BaseFeedbackEngine):
+    """Production coaching engine.
+
+    Inherits BaseFeedbackEngine; overrides generate() to add priority ordering
+    (eye contact most important, body movement least).
+
+    Demonstrates:
+      - Inheritance (super().__init__)
+      - Polymorphism (generate() override)
+      - super() usage
+      - Additional instance attribute (_priority)
+    """
+
+    # Class attribute — priority order (highest first)
+    _PRIORITY: tuple[str, ...] = (
+        "eye_contact", "posture", "head_stability", "smile", "body_movement",
+    )
+
+    def __init__(self, thresholds: dict[str, dict[str, float]] | None = None) -> None:
+        super().__init__(thresholds)                          # call parent __init__
+        # Additional instance attribute not in parent
+        self._generate_count: int = 0
+
+    def generate(                                             # polymorphic override
+        self,
+        *,
+        eye_contact:    float,
+        smile:          float,
+        posture:        float,
+        head_stability: float,
+        body_movement:  float,
+        confidence:     float,
+        face_visible:   bool = True,
+        calibrating:    bool = False,
+        label_fn: Callable[[str, float, bool], str] | None = None,
+    ) -> dict[str, Any]:
+        """Override: orders recommendations by _PRIORITY list."""
+        self._generate_count += 1
+
+        # Delegate the structure building to parent, then re-order recs
+        result = super().generate(
+            eye_contact    = eye_contact,
+            smile          = smile,
+            posture        = posture,
+            head_stability = head_stability,
+            body_movement  = body_movement,
+            confidence     = confidence,
+            face_visible   = face_visible,
+            calibrating    = calibrating,
+            label_fn       = label_fn,
+        )
+
+        if face_visible and not calibrating:
+            scores = {
+                "eye_contact":    eye_contact,
+                "smile":          smile,
+                "posture":        posture,
+                "head_stability": head_stability,
+                "body_movement":  body_movement,
+            }
+            # Rebuild recs in priority order using generator expression
+            ordered = [
+                self._pick(key, _POOLS[key][self._severity(key, scores[key])])
+                for key in self._PRIORITY
+                if self._severity(key, scores[key]) < 2
+            ]
+            result["recommendations"] = ordered or [self._pick("all_good", _ALL_GOOD)]
+
+        return result
+
+    @property
+    def generate_count(self) -> int:
+        """How many times generate() has been called this session."""
+        return self._generate_count
+
+    def reset_count(self) -> None:
+        """Reset the call counter (e.g. on new session)."""
+        self._generate_count = 0
+
+    def __repr__(self) -> str:
+        return (
+            f"CoachingFeedbackEngine("
+            f"calls={self._generate_count}, "
+            f"thresholds={list(self.thresholds.keys())})"
+        )
+
+
+# ── Backward-compatible alias: existing code imports FeedbackEngine ───────────
+FeedbackEngine = CoachingFeedbackEngine

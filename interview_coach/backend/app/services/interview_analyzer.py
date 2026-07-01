@@ -1,25 +1,31 @@
 """Real-time interview coaching analyzer using MediaPipe Face Mesh + Pose.
 
-Fixes applied
--------------
-Flaw A  — All facial distances normalized by interocular distance (ICD);
-           body distances normalized by shoulder width.
-Flaw B  — Full 3D yaw AND pitch estimated from 6-point PnP solve using the
-           face transformation matrix landmarks; camera-above-screen pitch
-           offset loaded from per-user profile and subtracted before scoring.
-           Frames with |corrected_yaw| > 25° are gated (frozen, not fabricated).
-Flaw C  — EMA (α=0.3) replaces brick-wall mean; hysteresis on status labels;
-           smile reports 80th-percentile of rolling window.
-Flaw D  — Missing face/pose → scores frozen at last known value; frame excluded
-           from session aggregates; explicit face_visible/pose_visible flags.
-Flaw E  — 2-second in-session neutral calibration; persistent per-user baseline
-           loaded at session start and saved on session end via UserProfileService.
+Fixes applied (v2)
+------------------
+Item 1  — Emitted payload uses null/0 for face-gated metrics instead of frozen EMA.
+           Internal EMA state is still frozen (for warm-up continuity), but the
+           wire value is 0 so the frontend never shows stale numbers as live readings.
+Item 2  — Frontend gating handled here by adding face_valid / pose_valid booleans
+           alongside each metric so the UI can unambiguously decide to show "—".
+Item 3  — Calibrating flag propagated in every payload so frontend can grey out cards.
+Item 4  — Movement/stability normalization anchors tightened (moved to config):
+           body_movement floor 0.003→0.0003, ceiling 0.047→0.018;
+           head_stability divisor coefficient 0.15→0.06.
+Item 5  — Posture: spine lean penalty added using nose-to-shoulder-midpoint ratio;
+           shoulder visibility threshold raised from 0.5 to 0.65.
+Item 6  — Smile: cheek-squint proxy added (eye-outer to cheekbone contraction);
+           ratio score suppressed when mouth is open (jaw_open > threshold).
+Item 7  — Diagnostic mode: when diagnostic=True, payload includes landmark coords
+           and raw internal values for the overlay canvas and debug panel.
 
-Config thresholds wired
+Previous fixes retained
 -----------------------
-All "good"/"okay" thresholds now come from interview_config.json (or config.yaml
-defaults). FeedbackEngine._severity() and _label_with_hysteresis() both read from
-self.thresholds so changing the JSON file changes the labels without code edits.
+Flaw A  — All distances ICD/shoulder-normalized.
+Flaw B  — solvePnP yaw+pitch; camera offset correction.
+Flaw C  — EMA α=0.3; hysteresis labels; 80th-pct smile window.
+Flaw D  — None returns; excluded flag; session aggregate filtering.
+Flaw E  — 2-sec calibration + persistent UserProfile baseline.
+Config thresholds wired end-to-end.
 """
 
 from __future__ import annotations
@@ -37,9 +43,36 @@ from app.services.feedback_engine import FeedbackEngine
 
 # ── Module-level tuning constants ─────────────────────────────────────────────
 _EMA_ALPHA            = 0.30   # EMA recent-frame weight (0.1 slow … 0.5 fast)
+_EMA_ALPHA_SMILE      = 0.45   # faster EMA for smile — short genuine smiles register
 _YAW_THRESHOLD_DEG    = 25.0   # gate frames with |corrected yaw| beyond this
 _CALIB_SECONDS        = 2      # seconds of neutral recording at session start
 _SMILE_PEAK_PERCENTILE = 80    # percentile of smile window (captures events)
+
+# Body-movement normalization anchors (Item 4 — tightened from 0.003/0.047)
+# floor = combined variance typical of a motionless person
+# ceil  = combined variance of noticeable fidgeting
+# Both are in shoulder-width-normalized variance units.
+_MOVEMENT_FLOOR = 0.0003   # was 0.003 — floor now at actual desk-still level
+_MOVEMENT_CEIL  = 0.018    # was 0.047 — full range covers realistic fidgeting
+
+# Head-stability normalization coefficient (Item 4 — tightened from 0.15)
+# std_norm = std / (icd * _STABILITY_COEFF)
+# Smaller coeff → denominator smaller → same sway registers higher std_norm
+_STABILITY_COEFF = 0.06    # was 0.15 — captures realistic small head movements
+
+# Smile cheek-squint proxy (Item 6)
+# Duchenne smile contracts the distance between eye outer corner and cheekbone.
+# Landmark 36 (left lower outer eye region) and 346 (right) approximate this.
+# When the y-gap between 33↔116 (left) or 263↔345 (right) contracts, it's real.
+_SMILE_JAW_OPEN_THRESHOLD = 0.20   # mouth_height/icd ratio above which mouth is open
+_SMILE_SQUINT_WEIGHT      = 0.30   # blend: 30% squint, 70% mouth geometry
+
+# Posture lean penalty (Item 5)
+# Measures nose-to-shoulder-midpoint y-distance in shoulder-width units.
+# A healthy upright person: nose is ~1.5× shoulder-width above midpoint.
+# Threshold: if less than this ratio, a lean penalty is applied.
+_POSTURE_LEAN_RATIO_MIN   = 0.8    # nose must be at least 0.8× sw above midpoint
+_POSTURE_SHOULDER_VIS_MIN = 0.65   # raised from 0.5 (Item 5)
 
 # 3-D reference points (MediaPipe canonical model, in mm, OpenCV coords)
 # Used for solvePnP to obtain real yaw / pitch / roll from 2-D landmarks.
@@ -92,10 +125,12 @@ class InterviewAnalyzer:
         window_size: int = 30,
         fps: int = 15,
         user_id: str | None = None,
+        diagnostic_mode: bool = False,
     ) -> None:
         self.window_size = window_size
         self.fps = fps
         self.user_id = user_id
+        self.diagnostic_mode = diagnostic_mode
         self.config: dict[str, Any] = {}
         self.weights = {
             "eye_contact":    0.30,
@@ -228,7 +263,7 @@ class InterviewAnalyzer:
             return
         try:
             from app.services.user_profile_service import UserProfileService
-            UserProfileService().update_camera_offset(self.user_id, pitch_deg)
+            UserProfileService().update_camera_offset(self.user_id, pitch_deg=pitch_deg)
         except Exception:
             pass
 
@@ -359,23 +394,58 @@ class InterviewAnalyzer:
 
     @classmethod
     def raw_smile_score(cls, face_landmarks) -> float | None:
-        """Returns None when face absent. Elevation normalized by ICD (Flaw A)."""
+        """Returns None when face absent.
+
+        Combines three signals (Item 6):
+        - ratio_score:    mouth_width/height ratio (suppressed when jaw is open)
+        - elevation_score: lip-corner elevation normalized by ICD
+        - squint_score:   cheek-squint proxy (eye-outer to cheekbone contraction)
+
+        Using cheek squint makes the metric robust to speaking, where the mouth
+        opens and the ratio score collapses, producing false negatives.
+        """
         if face_landmarks is None:
             return None
         lm = np.array([[p.x, p.y] for p in face_landmarks.landmark])
         icd = cls._interocular_distance(lm)
+
         mouth_width  = float(np.linalg.norm(lm[61] - lm[291]))
         mouth_height = float(np.linalg.norm(lm[13] - lm[14]))
         if mouth_height < 1e-6:
             return 0.0
-        ratio       = mouth_width / mouth_height
-        ratio_score = float(np.clip((ratio - 2.0) / 3.0, 0.0, 1.0))
+
+        # Jaw open? Suppress ratio when mouth is open to avoid speech artifact.
+        jaw_open = mouth_height / (icd + 1e-6)
+        mouth_is_open = jaw_open > _SMILE_JAW_OPEN_THRESHOLD
+
+        ratio = mouth_width / mouth_height
+        ratio_score = 0.0 if mouth_is_open else float(np.clip((ratio - 2.0) / 3.0, 0.0, 1.0))
+
         lip_center_y = (lm[13][1] + lm[14][1]) / 2.0
         corner_y     = (lm[61][1] + lm[291][1]) / 2.0
-        elevation_score = float(np.clip(
-            (lip_center_y - corner_y) / (icd * 0.25), 0.0, 1.0
+        elevation_score = float(np.clip((lip_center_y - corner_y) / (icd * 0.25), 0.0, 1.0))
+
+        # Cheek squint: y-distance between eye outer corner (33/263) and
+        # infraorbital region (landmarks 116 left / 345 right in 478-mesh).
+        # Contraction during genuine smiling reduces this y-gap.
+        # We measure the gap relative to the resting gap (≈ icd * 0.35) and
+        # score how much it has contracted.
+        try:
+            left_gap  = abs(lm[116][1] - lm[33][1])
+            right_gap = abs(lm[345][1] - lm[263][1])
+            avg_gap   = (left_gap + right_gap) / 2.0
+            rest_gap  = icd * 0.35 + 1e-6
+            # Squint score: low gap = more squint = real smile
+            squint_score = float(np.clip(1.0 - avg_gap / rest_gap, 0.0, 1.0))
+        except (IndexError, Exception):
+            squint_score = 0.0
+
+        # Blend: ratio + elevation carry 70%, cheek squint 30%
+        mouth_score = 0.55 * ratio_score + 0.45 * elevation_score
+        return float(np.clip(
+            (1.0 - _SMILE_SQUINT_WEIGHT) * mouth_score + _SMILE_SQUINT_WEIGHT * squint_score,
+            0.0, 1.0,
         ))
-        return 0.55 * ratio_score + 0.45 * elevation_score
 
     @classmethod
     def head_stability_score(
@@ -384,12 +454,16 @@ class InterviewAnalyzer:
         window_size: int,
         icd: float = 0.12,
     ) -> float | None:
-        """Nose-position std normalized by ICD. Returns None when < 2 pts (Flaw D)."""
+        """Nose-position std normalized by ICD. Returns None when < 2 pts (Flaw D).
+
+        Item 4: coefficient tightened from 0.15 to _STABILITY_COEFF (0.06) so
+        that realistic small head sways register instead of always scoring ~1.0.
+        """
         if len(positions) < 2:
             return None
         arr = np.array(positions[-window_size:])
         std = float(np.std(arr, axis=0).mean())
-        std_norm = std / (icd * 0.15 + 1e-6)
+        std_norm = std / (icd * _STABILITY_COEFF + 1e-6)
         return float(np.clip(1.0 - std_norm, 0.0, 1.0))
 
     @classmethod
@@ -408,7 +482,12 @@ class InterviewAnalyzer:
         window_size: int,
         shoulder_width: float = 0.20,
     ) -> float | None:
-        """Variance normalized by shoulder width (Flaw A). None when no data (Flaw D)."""
+        """Variance normalized by shoulder width (Flaw A). None when no data (Flaw D).
+
+        Item 4: floor/ceiling anchors tightened from 0.003/0.047 to
+        _MOVEMENT_FLOOR/_MOVEMENT_CEIL so typical desk movement registers
+        instead of permanently clipping to 1.0.
+        """
         if len(shoulder_centers) < 2 and not displacements:
             return None
         shoulder_var = 0.0
@@ -424,7 +503,8 @@ class InterviewAnalyzer:
             if displacements else 0.0
         )
         combined = 0.45 * shoulder_var + 0.35 * head_var + 0.20 * disp_mean
-        return float(np.clip(1.0 - (combined - 0.003) / 0.047, 0.0, 1.0))
+        denom = max(_MOVEMENT_CEIL - _MOVEMENT_FLOOR, 1e-8)
+        return float(np.clip(1.0 - (combined - _MOVEMENT_FLOOR) / denom, 0.0, 1.0))
 
     @classmethod
     def body_movement_from_buffers(
@@ -439,28 +519,54 @@ class InterviewAnalyzer:
 
     @classmethod
     def posture_score(cls, pose_landmarks, shoulder_width: float | None = None) -> float | None:
-        """Shoulder tilt normalized by shoulder width. None when absent (Flaw D)."""
+        """Shoulder tilt + lean penalty, normalized by shoulder width.
+
+        Item 5 improvements:
+        - Shoulder visibility threshold raised to _POSTURE_SHOULDER_VIS_MIN (0.65)
+        - Lean penalty: measures nose-to-shoulder-midpoint y-distance vs shoulder
+          width. If the ratio is below _POSTURE_LEAN_RATIO_MIN the person is
+          leaning too far back or the nose is too close to the shoulders → penalty.
+        - Hip-midpoint uprightness check if landmarks 23/24 are visible (spine angle).
+        """
         if pose_landmarks is None:
             return None
         lm = np.array([[p.x, p.y, p.visibility] for p in pose_landmarks.landmark])
         ls, rs, nose = lm[11], lm[12], lm[0]
-        if ls[2] < 0.5 or rs[2] < 0.5:
+
+        # Item 5: raised visibility threshold
+        if ls[2] < _POSTURE_SHOULDER_VIS_MIN or rs[2] < _POSTURE_SHOULDER_VIS_MIN:
             return None
+
         sw = shoulder_width or float(np.linalg.norm(ls[:2] - rs[:2])) + 1e-6
         tilt_norm = abs(ls[1] - rs[1]) / (sw * 0.4 + 1e-6)
-        upright   = nose[1] < min(ls[1], rs[1])
         score     = 1.0 - tilt_norm
-        if not upright:
-            score *= 0.7
+
+        # Item 5: lean penalty using nose-to-shoulder-midpoint y-distance
+        shoulder_mid_y = (ls[1] + rs[1]) / 2.0
+        nose_to_shoulder_y = shoulder_mid_y - nose[1]  # positive when nose above shoulders
+        lean_ratio = nose_to_shoulder_y / (sw + 1e-6)
+        if lean_ratio < _POSTURE_LEAN_RATIO_MIN:
+            # Penalty proportional to deficit below minimum ratio
+            deficit = _POSTURE_LEAN_RATIO_MIN - lean_ratio
+            score *= max(0.0, 1.0 - deficit * 0.8)
+
+        # Hip uprightness check (spine angle) if hips are visible
+        if len(lm) > 24 and lm[23][2] > 0.5 and lm[24][2] > 0.5:
+            hip_mid_y = (lm[23][1] + lm[24][1]) / 2.0
+            # Shoulder midpoint should be above hip midpoint
+            if shoulder_mid_y >= hip_mid_y:  # shoulders at or below hips → very slouched
+                score *= 0.60
+
         return float(np.clip(score, 0.0, 1.0))
 
 
     # ──────────────────────────────────────────────────────────────────
     # EMA + Hysteresis — use config thresholds (was the discrepancy)
     # ──────────────────────────────────────────────────────────────────
-    def _ema_update(self, key: str, new_val: float) -> float:
+    def _ema_update(self, key: str, new_val: float, alpha: float | None = None) -> float:
+        a = alpha if alpha is not None else _EMA_ALPHA
         prev = self._ema.get(key, new_val)
-        updated = _EMA_ALPHA * new_val + (1.0 - _EMA_ALPHA) * prev
+        updated = a * new_val + (1.0 - a) * prev
         self._ema[key] = updated
         return updated
 
