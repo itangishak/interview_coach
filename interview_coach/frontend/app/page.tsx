@@ -6,7 +6,6 @@ import { DiagnosticOverlay } from "@/components/DiagnosticOverlay";
 import { DiagnosticPanel } from "@/components/DiagnosticPanel";
 import { FeedbackPanel } from "@/components/FeedbackPanel";
 import { MetricsPanel } from "@/components/MetricsPanel";
-import { SessionReport } from "@/components/SessionReport";
 import { SparklineChart } from "@/components/SparklineChart";
 import { StatusCards } from "@/components/StatusCards";
 import { useInterviewSession } from "@/hooks/useInterviewSession";
@@ -46,10 +45,9 @@ export default function HomePage() {
   const [overlays, setOverlays] = useState<Record<OverlayKey, boolean>>(DEFAULT_OVERLAYS);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
 
-  const { connected, active, analysis, summary, startSession, stopSession } =
+  const { connected, active, analysis, startSession, stopSession } =
     useInterviewSession();
 
-  const [showReport, setShowReport] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [confHistory, setConfHistory] = useState<number[]>([]);
 
@@ -92,11 +90,6 @@ export default function HomePage() {
       return next.length > MAX_HIST ? next.slice(-MAX_HIST) : next;
     });
   }, [analysis]);
-
-  // Show report automatically when session ends with a summary
-  useEffect(() => {
-    if (summary) setShowReport(true);
-  }, [summary]);
 
   // Mirror webcam into the preview <video>
   useEffect(() => {
@@ -185,11 +178,6 @@ export default function HomePage() {
             }}
           >
             🔬 Diagnostic
-          </button>
-
-          {/* Session report */}
-          <button onClick={() => setShowReport(true)} style={btnBase}>
-            📋 Report
           </button>
 
           {/* Start / Stop */}
@@ -352,10 +340,6 @@ export default function HomePage() {
         )}
       </main>
 
-      {/* Report modal */}
-      {showReport && (
-        <SessionReport summary={summary} onClose={() => setShowReport(false)} />
-      )}
     </div>
   );
 }
